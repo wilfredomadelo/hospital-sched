@@ -1,0 +1,162 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  SUPERVISOR
+  NURSE
+}
+
+enum ShiftStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+enum LeaveType {
+  VACATION
+  SICK
+  PERSONAL
+  OTHER
+}
+
+enum AlertSeverity {
+  WARNING
+  BLOCK
+}
+
+enum AlertType {
+  OVERLAP
+  MAX_HOURS
+  REST_PERIOD
+  LICENSE_EXPIRED
+  ON_LEAVE
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  passwordHash  String
+  name          String
+  role          Role
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  nurseProfile  NurseProfile?
+  notifications Notification[]
+}
+
+model Unit {
+  id                String            @id @default(cuid())
+  name              String            @unique
+  description       String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  nurses            NurseProfile[]
+  shiftAssignments  ShiftAssignment[]
+}
+
+model NurseProfile {
+  id               String            @id @default(cuid())
+  userId           String            @unique
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  licenseNumber    String
+  licenseExpiresAt DateTime
+  skills           String            @default("[]")
+  preferredShifts  String            @default("[]")
+  unitId           String?
+  unit             Unit?             @relation(fields: [unitId], references: [id])
+  maxHoursPerWeek  Int               @default(40)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  shiftAssignments ShiftAssignment[]
+  leaveRequests    LeaveRequest[]
+
+  @@index([licenseExpiresAt])
+}
+
+model ShiftTemplate {
+  id               String            @id @default(cuid())
+  name             String
+  startTime        String
+  endTime          String
+  isNight          Boolean           @default(false)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  shiftAssignments ShiftAssignment[]
+}
+
+model ShiftAssignment {
+  id         String        @id @default(cuid())
+  nurseId    String
+  nurse      NurseProfile  @relation(fields: [nurseId], references: [id], onDelete: Cascade)
+  unitId     String
+  unit       Unit          @relation(fields: [unitId], references: [id])
+  templateId String
+  template   ShiftTemplate @relation(fields: [templateId], references: [id])
+  startAt    DateTime
+  endAt      DateTime
+  status     ShiftStatus   @default(DRAFT)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([nurseId, startAt])
+  @@index([unitId, startAt])
+}
+
+model LeaveRequest {
+  id        String      @id @default(cuid())
+  nurseId   String
+  nurse     NurseProfile @relation(fields: [nurseId], references: [id], onDelete: Cascade)
+  startDate DateTime
+  endDate   DateTime
+  type      LeaveType
+  status    LeaveStatus @default(PENDING)
+  reason    String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([nurseId, status])
+}
+
+model ComplianceAlert {
+  id                   String        @id @default(cuid())
+  type                 AlertType
+  severity             AlertSeverity
+  message              String
+  relatedAssignmentIds String        @default("[]")
+  nurseId              String?
+  resolvedAt           DateTime?
+  createdAt            DateTime      @default(now())
+
+  @@index([resolvedAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+model PublicHoliday {
+  id   String   @id @default(cuid())
+  date DateTime @unique
+  name String
+}
