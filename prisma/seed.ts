@@ -15,6 +15,77 @@ const combineDateAndTime = (date: Date, time: string) => {
   return setMinutes(setHours(date, h), m);
 };
 
+const FIRST_NAMES = [
+  "Nina",
+  "Jordan",
+  "Morgan",
+  "Casey",
+  "Riley",
+  "Avery",
+  "Quinn",
+  "Harper",
+  "Reese",
+  "Skyler",
+  "Cameron",
+  "Drew",
+  "Jamie",
+  "Taylor",
+  "Alexis",
+];
+
+const LAST_NAMES = [
+  "Patel",
+  "Lee",
+  "Chen",
+  "Brooks",
+  "Santos",
+  "Nguyen",
+  "Garcia",
+  "Kim",
+  "Walsh",
+  "Torres",
+  "Singh",
+  "Okafor",
+  "Murphy",
+  "Ali",
+  "Bennett",
+];
+
+const ICU_SKILLS = [
+  ["Critical Care", "Ventilator"],
+  ["Critical Care"],
+  ["Critical Care", "Oncology"],
+  ["Cardiac", "Critical Care"],
+  ["Ventilator", "ECMO"],
+];
+
+const ER_SKILLS = [
+  ["Trauma", "Triage"],
+  ["Triage"],
+  ["Trauma", "Pediatrics"],
+  ["Emergency", "Triage"],
+  ["Trauma"],
+];
+
+const PREFS = [["Day"], ["Evening"], ["Night"], ["Day", "Evening"], ["Evening", "Night"]];
+
+const buildNurseDefs = (unitId: string, unitCode: "icu" | "er", count: number) => {
+  const skillsPool = unitCode === "icu" ? ICU_SKILLS : ER_SKILLS;
+  const startNum = unitCode === "icu" ? 1 : 101;
+
+  return Array.from({ length: count }, (_, i) => {
+    const n = startNum + i;
+    return {
+      email: `nurse${n}@hospital.local`,
+      name: `${FIRST_NAMES[i % FIRST_NAMES.length]} ${LAST_NAMES[i % LAST_NAMES.length]}`,
+      unitId,
+      skills: skillsPool[i % skillsPool.length],
+      preferredShifts: PREFS[i % PREFS.length],
+      licenseNumber: `RN-${String(n).padStart(4, "0")}`,
+    };
+  });
+};
+
 async function main() {
   await prisma.complianceAlert.deleteMany();
   await prisma.notification.deleteMany();
@@ -88,46 +159,8 @@ async function main() {
   });
 
   const nurseDefs = [
-    {
-      email: "nurse1@hospital.local",
-      name: "Nina Patel",
-      unitId: icu.id,
-      skills: ["Critical Care", "Ventilator"],
-      preferredShifts: ["Day"],
-      licenseNumber: "RN-1001",
-    },
-    {
-      email: "nurse2@hospital.local",
-      name: "Jordan Lee",
-      unitId: icu.id,
-      skills: ["Critical Care"],
-      preferredShifts: ["Evening", "Night"],
-      licenseNumber: "RN-1002",
-    },
-    {
-      email: "nurse3@hospital.local",
-      name: "Morgan Chen",
-      unitId: er.id,
-      skills: ["Trauma", "Triage"],
-      preferredShifts: ["Day", "Evening"],
-      licenseNumber: "RN-1003",
-    },
-    {
-      email: "nurse4@hospital.local",
-      name: "Casey Brooks",
-      unitId: er.id,
-      skills: ["Triage"],
-      preferredShifts: ["Night"],
-      licenseNumber: "RN-1004",
-    },
-    {
-      email: "nurse5@hospital.local",
-      name: "Riley Santos",
-      unitId: icu.id,
-      skills: ["Critical Care", "Oncology"],
-      preferredShifts: ["Day"],
-      licenseNumber: "RN-1005",
-    },
+    ...buildNurseDefs(icu.id, "icu", 15),
+    ...buildNurseDefs(er.id, "er", 15),
   ];
 
   const nurses = [];
@@ -211,7 +244,9 @@ async function main() {
   console.log("Logins (password: password123):");
   console.log(`  Admin:      ${admin.email}`);
   console.log(`  Supervisor: ${supervisor.email}`);
-  console.log(`  Nurses:     nurse1@hospital.local … nurse5@hospital.local`);
+  console.log(`  ICU nurses: nurse1@hospital.local … nurse15@hospital.local`);
+  console.log(`  ER nurses:  nurse101@hospital.local … nurse115@hospital.local`);
+  console.log(`  Totals:     15 ICU + 15 ER`);
 }
 
 main()

@@ -28,7 +28,7 @@ Password for all accounts: `password123`
 |------------|-------------------------------|
 | Admin      | admin@hospital.local          |
 | Supervisor | supervisor@hospital.local     |
-| Nurse      | nurse1@hospital.local … nurse5@hospital.local |
+| Nurse      | nurse1–15@hospital.local (ICU), nurse101–115@hospital.local (ER) |
 
 ## Features
 

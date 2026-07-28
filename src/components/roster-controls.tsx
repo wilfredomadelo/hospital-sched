@@ -1,9 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { format, parseISO, startOfWeek } from "date-fns";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import type { RosterViewMode } from "@/lib/scheduling/period";
+
+const toMonday = (isoDate: string) =>
+  format(startOfWeek(parseISO(isoDate), { weekStartsOn: 1 }), "yyyy-MM-dd");
 
 export const RosterControls = ({
   units,
@@ -20,8 +24,11 @@ export const RosterControls = ({
 
   const push = (next: { unitId?: string; view?: string; start?: string }) => {
     const u = next.unitId ?? unitId ?? "";
-    const v = next.view ?? view;
-    const s = next.start ?? start;
+    const v = (next.view ?? view) as RosterViewMode;
+    let s = next.start ?? start;
+    if (v === "week" || v === "15day") {
+      s = toMonday(s);
+    }
     router.push(`/admin/roster?unitId=${u}&view=${v}&start=${s}`);
   };
 
