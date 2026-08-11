@@ -11,7 +11,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 export default async function UnitsPage() {
   await requireRole(["ADMIN", "SUPERVISOR"]);
   const units = await prisma.unit.findMany({
-    include: { _count: { select: { nurses: true } } },
+    include: {
+      _count: { select: { nurses: { where: { archivedAt: null } } } },
+    },
     orderBy: { name: "asc" },
   });
 

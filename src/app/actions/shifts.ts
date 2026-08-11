@@ -51,6 +51,7 @@ export const assignShift = async (formData: FormData): Promise<AssignResult> => 
     where: { id: parsed.data.templateId },
   });
   if (!nurse || !template) return { error: "Nurse or template not found." };
+  if (nurse.archivedAt) return { error: "Cannot assign shifts to archived staff." };
 
   const day = parseISO(parsed.data.date);
   let startAt = combineDateAndTime(day, template.startTime);
@@ -294,7 +295,7 @@ export const copyPreviousPeriod = async (
     const nurse = await prisma.nurseProfile.findUnique({
       where: { id: prev.nurseId },
     });
-    if (!nurse) continue;
+    if (!nurse || nurse.archivedAt) continue;
 
     const issues = await evaluateAssignment({
       nurse,

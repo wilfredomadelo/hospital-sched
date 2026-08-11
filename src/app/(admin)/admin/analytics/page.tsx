@@ -38,7 +38,7 @@ export default async function AnalyticsPage({
     : [];
 
   const nurses = unitId
-    ? await prisma.nurseProfile.count({ where: { unitId } })
+    ? await prisma.nurseProfile.count({ where: { unitId, archivedAt: null } })
     : 0;
 
   const totalHours = assignments.reduce(

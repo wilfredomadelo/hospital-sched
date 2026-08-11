@@ -1,8 +1,8 @@
 import {
   addDays,
   addMonths,
+  differenceInCalendarDays,
   endOfMonth,
-  endOfWeek,
   format,
   parseISO,
   startOfMonth,
@@ -21,22 +21,18 @@ export const resolvePeriod = (params: {
   const raw = params.start ? parseISO(params.start) : new Date();
 
   if (view === "month") {
-    const monthAnchor = startOfMonth(raw);
-    const start = mondayOf(monthAnchor);
-    const monthEnd = endOfMonth(monthAnchor);
-    const endExclusive = addDays(endOfWeek(monthEnd, { weekStartsOn: 1 }), 1);
-    const dayCount = Math.round(
-      (endExclusive.getTime() - start.getTime()) / (24 * 60 * 60 * 1000),
-    );
+    const start = startOfMonth(raw);
+    const monthEnd = endOfMonth(start);
+    const dayCount = differenceInCalendarDays(monthEnd, start) + 1;
 
     return {
       start,
-      end: endExclusive,
+      end: addDays(monthEnd, 1),
       days: Array.from({ length: dayCount }, (_, i) => addDays(start, i)),
       dayCount,
-      prevStart: format(addMonths(monthAnchor, -1), "yyyy-MM-dd"),
-      nextStart: format(addMonths(monthAnchor, 1), "yyyy-MM-dd"),
-      label: format(monthAnchor, "MMMM yyyy"),
+      prevStart: format(addMonths(start, -1), "yyyy-MM-dd"),
+      nextStart: format(addMonths(start, 1), "yyyy-MM-dd"),
+      label: format(start, "MMMM yyyy"),
     };
   }
 

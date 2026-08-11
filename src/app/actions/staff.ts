@@ -138,3 +138,37 @@ export const updateNurse = async (formData: FormData): Promise<void> => {
 
   revalidatePath("/admin/staff");
 };
+
+export const archiveNurse = async (formData: FormData): Promise<void> => {
+  await requireRole([Role.ADMIN, Role.SUPERVISOR]);
+  const nurseId = String(formData.get("nurseId") ?? "");
+  if (!nurseId) return;
+
+  await prisma.nurseProfile.update({
+    where: { id: nurseId },
+    data: { archivedAt: new Date() },
+  });
+
+  revalidatePath("/admin/staff");
+  revalidatePath("/admin/roster");
+  revalidatePath("/admin");
+  revalidatePath("/admin/units");
+  revalidatePath("/admin/analytics");
+};
+
+export const unarchiveNurse = async (formData: FormData): Promise<void> => {
+  await requireRole([Role.ADMIN, Role.SUPERVISOR]);
+  const nurseId = String(formData.get("nurseId") ?? "");
+  if (!nurseId) return;
+
+  await prisma.nurseProfile.update({
+    where: { id: nurseId },
+    data: { archivedAt: null },
+  });
+
+  revalidatePath("/admin/staff");
+  revalidatePath("/admin/roster");
+  revalidatePath("/admin");
+  revalidatePath("/admin/units");
+  revalidatePath("/admin/analytics");
+};

@@ -9,7 +9,7 @@ export default async function AdminOverviewPage() {
   await requireRole(["ADMIN", "SUPERVISOR"]);
 
   const [nurses, units, pendingLeave, openAlerts, upcoming] = await Promise.all([
-    prisma.nurseProfile.count(),
+    prisma.nurseProfile.count({ where: { archivedAt: null } }),
     prisma.unit.count(),
     prisma.leaveRequest.count({ where: { status: "PENDING" } }),
     prisma.complianceAlert.count({ where: { resolvedAt: null } }),

@@ -4,6 +4,7 @@ import { requireRole } from "@/lib/session";
 const adminNav = [
   { href: "/admin", label: "Overview" },
   { href: "/admin/roster", label: "Roster" },
+  { href: "/admin/holidays", label: "Holidays" },
   { href: "/admin/analytics", label: "Analytics" },
   { href: "/admin/staff", label: "Staff" },
   { href: "/admin/units", label: "Units" },

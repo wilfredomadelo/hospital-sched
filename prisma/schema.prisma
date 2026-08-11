@@ -78,12 +78,14 @@ model NurseProfile {
   unitId           String?
   unit             Unit?             @relation(fields: [unitId], references: [id])
   maxHoursPerWeek  Int               @default(40)
+  archivedAt       DateTime?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   shiftAssignments ShiftAssignment[]
   leaveRequests    LeaveRequest[]
 
   @@index([licenseExpiresAt])
+  @@index([archivedAt])
 }
 
 model ShiftTemplate {

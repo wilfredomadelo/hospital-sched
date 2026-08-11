@@ -52,7 +52,10 @@ export default async function RosterPage({
         })
       : Promise.resolve([]),
     prisma.nurseProfile.findMany({
-      where: unitId ? { unitId } : undefined,
+      where: {
+        archivedAt: null,
+        ...(unitId ? { unitId } : {}),
+      },
       include: { user: true, unit: true },
       orderBy: { user: { name: "asc" } },
     }),
@@ -62,7 +65,7 @@ export default async function RosterPage({
             status: "APPROVED",
             startDate: { lte: period.end },
             endDate: { gte: period.start },
-            nurse: { unitId },
+            nurse: { unitId, archivedAt: null },
           },
         })
       : Promise.resolve([]),

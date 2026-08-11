@@ -144,7 +144,6 @@ export const RosterGrid = ({
   };
 
   const handleCellClick = (nurseId: string, dateKey: string) => {
-    if (holidaySet.has(dateKey)) return;
     if (leaveSet.has(`${nurseId}|${dateKey}`)) return;
 
     if (fillMode && fillTemplateId) {
@@ -222,7 +221,7 @@ export const RosterGrid = ({
           nurseIds: [...selectedNurses],
           unitId,
           templateId: bulkTemplateId,
-          dates: days.filter((d) => !holidaySet.has(d)),
+          dates: days,
         }),
       );
     });
@@ -247,30 +246,33 @@ export const RosterGrid = ({
     nurseId: string,
     d: string,
   ): { kind: CellKind; label: string; title: string; assignment?: RosterAssignment } => {
-    if (holidaySet.has(d)) {
-      return {
-        kind: "holiday",
-        label: "H",
-        title: holidayNames[d] || "Public holiday",
-      };
-    }
     if (leaveSet.has(`${nurseId}|${d}`)) {
       return { kind: "leave", label: "L", title: "Approved leave" };
     }
     const a = assignmentMap.get(`${nurseId}|${d}`);
-    if (!a) {
-      return { kind: "off", label: "Off", title: "Rest day / unassigned" };
+    if (a) {
+      const kind = colorKeyFromTemplate({
+        name: a.templateName,
+        isNight: a.isNight,
+      });
+      const holidayNote = holidaySet.has(d)
+        ? ` · ${holidayNames[d] || "Holiday"}`
+        : "";
+      return {
+        kind,
+        label: a.templateName.slice(0, 1),
+        title: `${a.templateName} ${a.startLabel}–${a.endLabel} (${a.status})${holidayNote}`,
+        assignment: a,
+      };
     }
-    const kind = colorKeyFromTemplate({
-      name: a.templateName,
-      isNight: a.isNight,
-    });
-    return {
-      kind,
-      label: a.templateName.slice(0, 1),
-      title: `${a.templateName} ${a.startLabel}–${a.endLabel} (${a.status})`,
-      assignment: a,
-    };
+    if (holidaySet.has(d)) {
+      return {
+        kind: "holiday",
+        label: "H",
+        title: holidayNames[d] || "Public holiday (off)",
+      };
+    }
+    return { kind: "off", label: "Off", title: "Rest day / unassigned" };
   };
 
   const exportCsv = () => {
@@ -485,8 +487,7 @@ export const RosterGrid = ({
                   const isActive =
                     activeCell?.nurseId === nurse.id &&
                     activeCell?.dateKey === d;
-                  const locked =
-                    meta.kind === "holiday" || meta.kind === "leave";
+                  const locked = meta.kind === "leave";
                   return (
                     <td key={d} className="border-b border-slate-100 p-0.5">
                       <button
