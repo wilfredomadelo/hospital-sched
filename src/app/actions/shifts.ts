@@ -197,25 +197,42 @@ export const deleteCancelledShifts = async (
 ): Promise<AssignResult> => {
   await requireRole([Role.ADMIN, Role.SUPERVISOR]);
   const unitId = String(formData.get("unitId") ?? "");
-  const startStr = String(formData.get("periodStart") ?? "");
-  const endStr = String(formData.get("periodEnd") ?? "");
-  if (!unitId || !startStr || !endStr) {
-    return { error: "Missing unit or period." };
+  if (!unitId) return { error: "Missing unit." };
+
+  const existing = await prisma.shiftAssignment.count({
+    where: { unitId, status: ShiftStatus.CANCELLED },
+  });
+  if (existing === 0) {
+    return {
+      success: true,
+      warnings: ["No cancelled shifts found for this unit."],
+    };
   }
 
   const result = await prisma.shiftAssignment.deleteMany({
-    where: {
-      unitId,
-      status: ShiftStatus.CANCELLED,
-      startAt: { gte: parseISO(startStr), lt: parseISO(endStr) },
-    },
+    where: { unitId, status: ShiftStatus.CANCELLED },
   });
+
+  const leftover = await prisma.shiftAssignment.count({
+    where: { unitId, status: ShiftStatus.CANCELLED },
+  });
+  if (leftover > 0) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM "ShiftAssignment" WHERE status = 'CANCELLED' AND unitId = ?`,
+      unitId,
+    );
+  }
+
+  const remaining = await prisma.shiftAssignment.count({
+    where: { unitId, status: ShiftStatus.CANCELLED },
+  });
+  const deleted = existing - remaining;
 
   revalidatePath("/admin/roster");
   revalidatePath("/nurse");
   return {
     success: true,
-    warnings: [`Permanently deleted ${result.count} cancelled shifts.`],
+    warnings: [`Permanently deleted ${deleted || result.count} cancelled shifts.`],
   };
 };
 

@@ -337,6 +337,7 @@ export const generateRoster = async (params: {
         n.licenseExpiresAt >= day &&
         !onLeaveThatDay(n.id, day, leaveByNurse),
     );
+    const onDuty = eligible.filter((n) => !offPlan.get(n.id)?.has(key));
     const assigned = new Set<string>();
     const todayCount = new Map(placeTemplates.map((t) => [t.id, 0]));
 
@@ -347,7 +348,6 @@ export const generateRoster = async (params: {
       for (const nurse of candidates) {
         if (tryPlace(nurse, template, day)) {
           assigned.add(nurse.id);
-          offPlan.get(nurse.id)?.delete(key);
           todayCount.set(template.id, (todayCount.get(template.id) ?? 0) + 1);
           return true;
         }
@@ -362,7 +362,6 @@ export const generateRoster = async (params: {
       for (const template of ranked) {
         if (tryPlace(nurse, template, day)) {
           assigned.add(nurse.id);
-          offPlan.get(nurse.id)?.delete(key);
           todayCount.set(template.id, (todayCount.get(template.id) ?? 0) + 1);
           return true;
         }
@@ -371,36 +370,48 @@ export const generateRoster = async (params: {
     };
 
     for (const template of coverOrder) {
-      const onDuty = eligible.filter((n) => !offPlan.get(n.id)?.has(key));
       if (takeFrom(onDuty, template)) continue;
-      const resting = eligible.filter((n) => offPlan.get(n.id)?.has(key));
-      if (takeFrom(resting, template)) continue;
       unstaffedSlots += 1;
     }
 
-    const leftover = eligible
-      .filter((n) => !assigned.has(n.id) && !offPlan.get(n.id)?.has(key))
+    const leftover = onDuty
+      .filter((n) => !assigned.has(n.id))
       .sort(sortByLoad);
 
     for (const nurse of leftover) {
-      if (
-        assigned.size >= targetOnDuty &&
-        (offPlan.get(nurse.id)?.size ?? 0) < rdQuota
-      ) {
-        offPlan.get(nurse.id)!.add(key);
+      const needsRd = (offPlan.get(nurse.id)?.size ?? 0) < rdQuota;
+      const atWorkCap = (workDays.get(nurse.id) ?? 0) >= workTarget;
+      if ((assigned.size >= targetOnDuty && needsRd) || atWorkCap) {
+        if (needsRd) offPlan.get(nurse.id)!.add(key);
         continue;
       }
       if (fillNurse(nurse)) continue;
-      if ((offPlan.get(nurse.id)?.size ?? 0) < rdQuota) {
-        offPlan.get(nurse.id)!.add(key);
-      }
+      if (needsRd) offPlan.get(nurse.id)!.add(key);
       blocked += 1;
     }
 
-    if ([...todayCount.values()].every((count) => count === 0)) {
-      unstaffedDays += 1;
+    if (assigned.size === 0) {
+      const resting = eligible
+        .filter((n) => offPlan.get(n.id)?.has(key))
+        .sort(sortByLoad);
+      const rescue = resting[0];
+      if (rescue && fillNurse(rescue)) {
+        offPlan.get(rescue.id)?.delete(key);
+      } else {
+        unstaffedDays += 1;
+      }
     }
   }
+
+  restoreRestDayQuota({
+    nurses,
+    offPlan,
+    rdQuota,
+    pending,
+    byNurse,
+    workDays,
+    nightCounts,
+  });
 
   // Batch insert — main speed win vs per-row create + compliance queries
   const CHUNK = 200;
@@ -439,6 +450,63 @@ const orderTemplates = (templates: ShiftTemplate[]) => {
   return [...templates].sort(
     (a, b) => score(a) - score(b) || a.startTime.localeCompare(b.startTime),
   );
+};
+
+const restoreRestDayQuota = (params: {
+  nurses: NurseWithUser[];
+  offPlan: Map<string, Set<string>>;
+  rdQuota: number;
+  pending: PendingCreate[];
+  byNurse: Map<string, MemAssignment[]>;
+  workDays: Map<string, number>;
+  nightCounts: Map<string, number>;
+}) => {
+  const { nurses, offPlan, rdQuota, pending, byNurse, workDays, nightCounts } =
+    params;
+
+  const staffedByDay = () => {
+    const map = new Map<string, number>();
+    for (const row of pending) {
+      const key = dayKey(row.startAt);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return map;
+  };
+
+  for (const nurse of nurses) {
+    while ((offPlan.get(nurse.id)?.size ?? 0) < rdQuota) {
+      const staffed = staffedByDay();
+      const theirs = pending
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => row.nurseId === nurse.id)
+        .sort((a, b) => {
+          const ka = dayKey(a.row.startAt);
+          const kb = dayKey(b.row.startAt);
+          return (staffed.get(kb) ?? 0) - (staffed.get(ka) ?? 0) || kb.localeCompare(ka);
+        });
+
+      const pick = theirs.find(
+        ({ row }) => (staffed.get(dayKey(row.startAt)) ?? 0) > 1,
+      );
+      if (!pick) break;
+
+      const key = dayKey(pick.row.startAt);
+      pending.splice(pick.index, 1);
+      const mem = byNurse.get(nurse.id) ?? [];
+      const memIdx = mem.findIndex(
+        (m) => m.startAt.getTime() === pick.row.startAt.getTime(),
+      );
+      if (memIdx >= 0) mem.splice(memIdx, 1);
+      workDays.set(nurse.id, Math.max(0, (workDays.get(nurse.id) ?? 0) - 1));
+      if (dayKey(pick.row.endAt) !== key) {
+        nightCounts.set(
+          nurse.id,
+          Math.max(0, (nightCounts.get(nurse.id) ?? 0) - 1),
+        );
+      }
+      offPlan.get(nurse.id)!.add(key);
+    }
+  }
 };
 
 const buildRestDayPlan = (params: {

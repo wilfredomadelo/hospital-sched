@@ -3,24 +3,33 @@
 import { useId } from "react";
 import { Button } from "@/components/ui/button";
 
+export type ConfirmDialogAction = {
+  label: string;
+  onClick: () => void;
+  variant?: "danger" | "default" | "outline" | "ghost";
+  disabled?: boolean;
+};
+
 type ConfirmDialogProps = {
   open: boolean;
   title: string;
   description: string;
-  confirmLabel: string;
+  confirmLabel?: string;
   cancelLabel?: string;
   pending?: boolean;
+  actions?: ConfirmDialogAction[];
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm?: () => void;
 };
 
 export const ConfirmDialog = ({
   open,
   title,
   description,
-  confirmLabel,
+  confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   pending = false,
+  actions,
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) => {
@@ -33,6 +42,18 @@ export const ConfirmDialog = ({
     if (pending) return;
     onCancel();
   };
+
+  const confirmButtons =
+    actions && actions.length > 0
+      ? actions
+      : [
+          {
+            label: confirmLabel,
+            onClick: () => onConfirm?.(),
+            variant: "danger" as const,
+            disabled: false,
+          },
+        ];
 
   return (
     <div
@@ -57,7 +78,7 @@ export const ConfirmDialog = ({
         <p id={descId} className="mt-2 text-sm text-slate-600">
           {description}
         </p>
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button
             type="button"
             variant="ghost"
@@ -67,15 +88,18 @@ export const ConfirmDialog = ({
           >
             {cancelLabel}
           </Button>
-          <Button
-            type="button"
-            variant="danger"
-            disabled={pending}
-            onClick={onConfirm}
-            aria-label={confirmLabel}
-          >
-            {confirmLabel}
-          </Button>
+          {confirmButtons.map((action) => (
+            <Button
+              key={action.label}
+              type="button"
+              variant={action.variant ?? "danger"}
+              disabled={pending || action.disabled}
+              onClick={action.onClick}
+              aria-label={action.label}
+            >
+              {action.label}
+            </Button>
+          ))}
         </div>
       </div>
     </div>

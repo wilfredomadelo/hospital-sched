@@ -241,29 +241,42 @@ export const RosterGrid = ({
     setConfirmAction("deleteCancelled");
   };
 
-  const handleConfirmAction = () => {
-    if (confirmAction === "clear") {
-      const ids = assignments.map((a) => a.id);
-      startTransition(async () => {
-        await bulkClearAssignments({ assignmentIds: ids });
-        setConfirmAction(null);
-        setError(null);
-        setMessage(`Cleared ${ids.length} assignments.`);
-        router.refresh();
-      });
+  const handleClearAssignments = (scope: "all" | "selected") => {
+    const ids =
+      scope === "selected"
+        ? assignments
+            .filter((a) => selectedNurses.has(a.nurseId))
+            .map((a) => a.id)
+        : assignments.map((a) => a.id);
+    if (ids.length === 0) {
+      setError(
+        scope === "selected"
+          ? "No selected staff have shifts to clear."
+          : "No assignments to clear.",
+      );
+      setConfirmAction(null);
       return;
     }
+    startTransition(async () => {
+      await bulkClearAssignments({ assignmentIds: ids });
+      setConfirmAction(null);
+      setError(null);
+      setMessage(
+        scope === "selected"
+          ? `Cleared ${ids.length} assignments for selected staff.`
+          : `Cleared ${ids.length} assignments.`,
+      );
+      router.refresh();
+    });
+  };
 
-    if (confirmAction === "deleteCancelled") {
-      startTransition(async () => {
-        const fd = new FormData();
-        fd.set("unitId", unitId);
-        fd.set("periodStart", periodStart);
-        fd.set("periodEnd", periodEnd);
-        applyResult(await deleteCancelledShifts(fd));
-        setConfirmAction(null);
-      });
-    }
+  const handleConfirmDeleteCancelled = () => {
+    startTransition(async () => {
+      const fd = new FormData();
+      fd.set("unitId", unitId);
+      applyResult(await deleteCancelledShifts(fd));
+      setConfirmAction(null);
+    });
   };
 
   const cellMeta = (
@@ -643,23 +656,33 @@ export const RosterGrid = ({
       </div>
 
       <ConfirmDialog
-        open={confirmAction !== null}
-        title={
-          confirmAction === "deleteCancelled"
-            ? "Delete cancelled shifts?"
-            : "Clear assignments?"
-        }
-        description={
-          confirmAction === "deleteCancelled"
-            ? "This permanently removes cancelled shifts for this unit in the current period from the database. This cannot be undone."
-            : "This marks every visible shift in the current period as cancelled. Cells become Rest Day (RD). Rows stay in the database until you delete cancelled shifts."
-        }
-        confirmLabel={
-          confirmAction === "deleteCancelled" ? "Delete cancelled" : "Clear"
-        }
+        open={confirmAction === "clear"}
+        title="Clear assignments?"
+        description="Clear selected marks shifts for checked staff as cancelled. Clear all marks every visible shift in this period as cancelled. Cells become Rest Day (RD). Rows stay in the database until you delete cancelled shifts."
         pending={pending}
         onCancel={() => setConfirmAction(null)}
-        onConfirm={handleConfirmAction}
+        actions={[
+          {
+            label: "Clear selected",
+            variant: "outline",
+            disabled: selectedNurses.size === 0,
+            onClick: () => handleClearAssignments("selected"),
+          },
+          {
+            label: "Clear all",
+            variant: "danger",
+            onClick: () => handleClearAssignments("all"),
+          },
+        ]}
+      />
+      <ConfirmDialog
+        open={confirmAction === "deleteCancelled"}
+        title="Delete cancelled shifts?"
+        description="This permanently removes every cancelled shift for this unit from the database, including other months. This cannot be undone."
+        confirmLabel="Delete cancelled"
+        pending={pending}
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={handleConfirmDeleteCancelled}
       />
 
       {typesOpen ? (
