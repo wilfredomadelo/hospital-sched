@@ -13,6 +13,7 @@ import {
 } from "@/lib/scheduling/compliance";
 import { createNotifications } from "@/lib/notifications";
 import { generateRoster } from "@/lib/scheduling/generator";
+import { findScheduleTypeById } from "@/lib/schedule-types-db";
 
 const combineDateAndTime = (date: Date, time: string) => {
   const [h, m] = time.split(":").map(Number);
@@ -191,6 +192,33 @@ export const cancelAssignment = async (formData: FormData): Promise<void> => {
   revalidatePath("/nurse");
 };
 
+export const deleteCancelledShifts = async (
+  formData: FormData,
+): Promise<AssignResult> => {
+  await requireRole([Role.ADMIN, Role.SUPERVISOR]);
+  const unitId = String(formData.get("unitId") ?? "");
+  const startStr = String(formData.get("periodStart") ?? "");
+  const endStr = String(formData.get("periodEnd") ?? "");
+  if (!unitId || !startStr || !endStr) {
+    return { error: "Missing unit or period." };
+  }
+
+  const result = await prisma.shiftAssignment.deleteMany({
+    where: {
+      unitId,
+      status: ShiftStatus.CANCELLED,
+      startAt: { gte: parseISO(startStr), lt: parseISO(endStr) },
+    },
+  });
+
+  revalidatePath("/admin/roster");
+  revalidatePath("/nurse");
+  return {
+    success: true,
+    warnings: [`Permanently deleted ${result.count} cancelled shifts.`],
+  };
+};
+
 export const publishPeriod = async (formData: FormData): Promise<AssignResult> => {
   await requireRole([Role.ADMIN, Role.SUPERVISOR]);
   const unitId = String(formData.get("unitId") ?? "");
@@ -253,8 +281,44 @@ export const runAutoRoster = async (formData: FormData): Promise<AssignResult> =
   const unitId = String(formData.get("unitId") ?? "");
   const startStr = String(formData.get("periodStart") ?? "");
   const endStr = String(formData.get("periodEnd") ?? "");
+  const scheduleTypeId = String(formData.get("scheduleTypeId") ?? "");
   if (!unitId || !startStr || !endStr) {
     return { error: "Missing unit or period." };
+  }
+  if (!scheduleTypeId) {
+    return { error: "Select a schedule type before generating." };
+  }
+
+  let nurseIds: string[] = [];
+  try {
+    const raw = String(formData.get("nurseIds") ?? "[]");
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      nurseIds = parsed.filter((id): id is string => typeof id === "string");
+    }
+  } catch {
+    return { error: "Invalid staff selection." };
+  }
+  if (nurseIds.length === 0) {
+    return { error: "Select at least one staff member." };
+  }
+
+  const scheduleType = await findScheduleTypeById(scheduleTypeId);
+  if (!scheduleType) {
+    return { error: "Schedule type not found." };
+  }
+
+  let dutyCodes: string[] = [];
+  try {
+    const parsed = JSON.parse(scheduleType.dutyCodes) as unknown;
+    if (Array.isArray(parsed)) {
+      dutyCodes = parsed.filter((c): c is string => typeof c === "string");
+    }
+  } catch {
+    dutyCodes = [];
+  }
+  if (dutyCodes.length === 0) {
+    return { error: "That schedule type has no legend codes." };
   }
 
   const result = await generateRoster({
@@ -262,6 +326,8 @@ export const runAutoRoster = async (formData: FormData): Promise<AssignResult> =
     periodStart: parseISO(startStr),
     periodEnd: parseISO(endStr),
     replaceDrafts: true,
+    nurseIds,
+    dutyCodes,
   });
 
   revalidatePath("/admin/roster");

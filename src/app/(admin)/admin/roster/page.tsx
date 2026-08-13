@@ -2,6 +2,7 @@ import { format } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/session";
 import { RosterGrid } from "@/components/roster-grid";
+import { listScheduleTypes } from "@/lib/schedule-types-db";
 import {
   dateKey,
   resolvePeriod,
@@ -32,7 +33,7 @@ export default async function RosterPage({
   const period = resolvePeriod({ view, start: params.start });
   const dayKeys = period.days.map(dateKey);
 
-  const [assignments, nurses, leaves, holidays] = await Promise.all([
+  const [assignments, nurses, leaves, holidays, scheduleTypes] = await Promise.all([
     unitId
       ? prisma.shiftAssignment.findMany({
           where: {
@@ -68,6 +69,7 @@ export default async function RosterPage({
     prisma.publicHoliday.findMany({
       where: { date: { gte: period.start, lt: period.end } },
     }),
+    listScheduleTypes(),
   ]);
 
   const leaveCodes: Record<string, string> = {};
@@ -124,6 +126,11 @@ export default async function RosterPage({
         startTime: t.startTime,
         endTime: t.endTime,
         isNight: t.isNight,
+      }))}
+      scheduleTypes={scheduleTypes.map((t) => ({
+        id: t.id,
+        name: t.name,
+        dutyCodes: t.dutyCodes,
       }))}
     />
   ) : (

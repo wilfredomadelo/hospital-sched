@@ -61,7 +61,15 @@ export const STATUS_CODES: StatusCodeDef[] = [
   { code: "VL", description: "Vacation Leave", kind: "leave" },
 ];
 
-export const LEAVE_TYPE_OPTIONS = STATUS_CODES.filter((c) => c.kind === "leave");
+export const parseDutyCodes = (raw: string) => {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [] as string[];
+    return parsed.filter((c): c is string => typeof c === "string");
+  } catch {
+    return [] as string[];
+  }
+};
 
 export const dutyByCode = Object.fromEntries(
   DUTY_CODES.map((d) => [d.code, d]),

@@ -114,12 +114,24 @@ export const generateRoster = async (params: {
   periodStart: Date;
   periodEnd: Date;
   replaceDrafts?: boolean;
+  nurseIds?: string[];
+  dutyCodes?: string[];
 }): Promise<{ created: number; skipped: number; message: string }> => {
-  const { unitId, periodStart, periodEnd, replaceDrafts = true } = params;
+  const {
+    unitId,
+    periodStart,
+    periodEnd,
+    replaceDrafts = true,
+    nurseIds,
+    dutyCodes,
+  } = params;
+
+  const nurseFilter =
+    nurseIds && nurseIds.length > 0 ? { id: { in: nurseIds } } : {};
 
   const [nurses, templates, leaves, holidays] = await Promise.all([
     prisma.nurseProfile.findMany({
-      where: { unitId },
+      where: { unitId, archivedAt: null, ...nurseFilter },
       include: { user: true },
       orderBy: { user: { name: "asc" } },
     }),
@@ -129,7 +141,7 @@ export const generateRoster = async (params: {
         status: LeaveStatus.APPROVED,
         startDate: { lte: periodEnd },
         endDate: { gte: periodStart },
-        nurse: { unitId },
+        nurse: { unitId, archivedAt: null, ...nurseFilter },
       },
     }),
     prisma.publicHoliday.findMany({
@@ -154,24 +166,25 @@ export const generateRoster = async (params: {
         unitId,
         status: ShiftStatus.DRAFT,
         startAt: { gte: periodStart, lt: periodEnd },
+        ...(nurseIds && nurseIds.length > 0 ? { nurseId: { in: nurseIds } } : {}),
       },
       data: { status: ShiftStatus.CANCELLED },
     });
   }
 
-  const nurseIds = nurses.map((n) => n.id);
+  const resolvedNurseIds = nurses.map((n) => n.id);
 
   // One fetch of remaining assignments (published / outside period) for overlap checks
   const existingRows = await prisma.shiftAssignment.findMany({
     where: {
-      nurseId: { in: nurseIds },
+      nurseId: { in: resolvedNurseIds },
       status: { in: [ShiftStatus.DRAFT, ShiftStatus.PUBLISHED] },
     },
     select: { id: true, nurseId: true, startAt: true, endAt: true },
   });
 
   const byNurse = new Map<string, MemAssignment[]>();
-  for (const id of nurseIds) byNurse.set(id, []);
+  for (const id of resolvedNurseIds) byNurse.set(id, []);
   for (const row of existingRows) {
     byNurse.get(row.nurseId)?.push(row);
   }
@@ -199,34 +212,37 @@ export const generateRoster = async (params: {
   const workTarget = Math.max(0, dayCount - rdQuota);
 
   const dutyNames = new Set(DUTY_CODES.map((d) => d.code));
-  // Keep auto-fill to a small duty set — fewer tries, faster, more consistent
-  const preferredAuto = ["7", "3", "11", "6", "8", "2", "10", "12"];
+  const requestedCodes = (dutyCodes ?? []).filter((c) => dutyNames.has(c));
+  const preferredAuto =
+    requestedCodes.length > 0
+      ? requestedCodes
+      : ["7", "3", "11", "6", "8", "2", "10", "12"];
   const orderedTemplates = orderTemplates(
-    templates.filter((t) => dutyNames.has(t.name)),
-  )
-    .sort((a, b) => {
-      const ia = preferredAuto.indexOf(a.name);
-      const ib = preferredAuto.indexOf(b.name);
-      const sa = ia === -1 ? 99 : ia;
-      const sb = ib === -1 ? 99 : ib;
-      return sa - sb || a.startTime.localeCompare(b.startTime);
-    })
-    .filter((t) => preferredAuto.includes(t.name));
+    templates.filter((t) => preferredAuto.includes(t.name)),
+  ).sort((a, b) => {
+    const ia = preferredAuto.indexOf(a.name);
+    const ib = preferredAuto.indexOf(b.name);
+    return ia - ib || a.startTime.localeCompare(b.startTime);
+  });
 
-  // Fall back to any duty templates if preferred set missing from DB
   const placeTemplates =
     orderedTemplates.length > 0
       ? orderedTemplates
-      : orderTemplates(templates.filter((t) => dutyNames.has(t.name))).slice(
-          0,
-          8,
-        );
+      : requestedCodes.length > 0
+        ? []
+        : orderTemplates(templates.filter((t) => dutyNames.has(t.name))).slice(
+            0,
+            8,
+          );
 
   if (placeTemplates.length === 0) {
     return {
       created: 0,
       skipped: 0,
-      message: "No duty-code templates found. Re-run db seed.",
+      message:
+        requestedCodes.length > 0
+          ? "No shift templates match that schedule type. Check legend codes."
+          : "No duty-code templates found. Re-run db seed.",
     };
   }
 
