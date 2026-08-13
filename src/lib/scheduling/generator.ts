@@ -33,6 +33,15 @@ const intervalsOverlap = (
   bEnd: Date,
 ) => aStart < bEnd && bStart < aEnd;
 
+const templateInterval = (template: ShiftTemplate, day: Date) => {
+  const startAt = combineDateAndTime(day, template.startTime);
+  let endAt = combineDateAndTime(day, template.endTime);
+  if (template.isNight || endAt <= startAt) {
+    endAt = combineDateAndTime(addDays(day, 1), template.endTime);
+  }
+  return { startAt, endAt };
+};
+
 type NurseWithUser = NurseProfile & {
   user: { id: string; name: string };
 };
@@ -51,14 +60,6 @@ type PendingCreate = {
   startAt: Date;
   endAt: Date;
   status: typeof ShiftStatus.DRAFT;
-};
-
-const parsePrefs = (raw: string) => {
-  try {
-    return JSON.parse(raw) as string[];
-  } catch {
-    return [] as string[];
-  }
 };
 
 const onLeaveThatDay = (
@@ -106,6 +107,7 @@ const isBlocked = (params: {
  * - Remaining days are work days
  * - RDs and on-duty headcount spread as evenly as possible across days
  * - Every day has at least one nurse on duty
+ * - Every duty code in the selected schedule type gets a nurse when staff exist
  *
  * Performance: plan + validate in memory, then one batched createMany.
  */
@@ -273,12 +275,7 @@ export const generateRoster = async (params: {
     template: ShiftTemplate,
     day: Date,
   ) => {
-    let startAt = combineDateAndTime(day, template.startTime);
-    let endAt = combineDateAndTime(day, template.endTime);
-    if (template.isNight) {
-      endAt = combineDateAndTime(addDays(day, 1), template.endTime);
-    }
-
+    const { startAt, endAt } = templateInterval(template, day);
     const existing = byNurse.get(nurse.id) ?? [];
     if (
       isBlocked({
@@ -310,103 +307,98 @@ export const generateRoster = async (params: {
     return true;
   };
 
-  const placeNurse = (
-    nurse: NurseWithUser,
-    preferred: ShiftTemplate,
-    day: Date,
-  ) => {
-    if (tryPlace(nurse, preferred, day)) return true;
-    for (const alt of placeTemplates) {
-      if (alt.id === preferred.id) continue;
-      if (tryPlace(nurse, alt, day)) return true;
-    }
-    return false;
-  };
+  const sortByLoad = (a: NurseWithUser, b: NurseWithUser) =>
+    (workDays.get(a.id) ?? 0) - (workDays.get(b.id) ?? 0) ||
+    (nightCounts.get(a.id) ?? 0) - (nightCounts.get(b.id) ?? 0) ||
+    a.user.name.localeCompare(b.user.name);
+
+  const coverOrder = [...placeTemplates].sort((a, b) => {
+    const overlapCount = (t: ShiftTemplate) =>
+      placeTemplates.filter((other) => {
+        if (other.id === t.id) return false;
+        const left = templateInterval(t, periodStart);
+        const right = templateInterval(other, periodStart);
+        return intervalsOverlap(
+          left.startAt,
+          left.endAt,
+          right.startAt,
+          right.endAt,
+        );
+      }).length;
+    return overlapCount(b) - overlapCount(a);
+  });
+
+  let unstaffedSlots = 0;
 
   for (const day of days) {
     const key = dayKey(day);
-    let working: NurseWithUser[] = nurses.filter((n) => {
-      if (offPlan.get(n.id)?.has(key)) return false;
-      if (n.licenseExpiresAt < day) return false;
-      if (onLeaveThatDay(n.id, day, leaveByNurse)) return false;
-      return true;
-    });
+    const eligible = nurses.filter(
+      (n) =>
+        n.licenseExpiresAt >= day &&
+        !onLeaveThatDay(n.id, day, leaveByNurse),
+    );
+    const assigned = new Set<string>();
+    const todayCount = new Map(placeTemplates.map((t) => [t.id, 0]));
 
-    if (working.length === 0) {
-      const rescue = nurses
-        .filter(
-          (n) =>
-            n.licenseExpiresAt >= day &&
-            !onLeaveThatDay(n.id, day, leaveByNurse),
-        )
-        .sort(
-          (a, b) =>
-            (workDays.get(a.id) ?? 0) - (workDays.get(b.id) ?? 0) ||
-            (offPlan.get(b.id)?.size ?? 0) - (offPlan.get(a.id)?.size ?? 0),
-        )[0];
+    const takeFrom = (pool: NurseWithUser[], template: ShiftTemplate) => {
+      const candidates = pool
+        .filter((n) => !assigned.has(n.id))
+        .sort(sortByLoad);
+      for (const nurse of candidates) {
+        if (tryPlace(nurse, template, day)) {
+          assigned.add(nurse.id);
+          offPlan.get(nurse.id)?.delete(key);
+          todayCount.set(template.id, (todayCount.get(template.id) ?? 0) + 1);
+          return true;
+        }
+      }
+      return false;
+    };
 
-      if (rescue) {
-        offPlan.get(rescue.id)?.delete(key);
-        working = [rescue];
-      } else {
-        unstaffedDays += 1;
+    const fillNurse = (nurse: NurseWithUser) => {
+      const ranked = [...placeTemplates].sort(
+        (a, b) => (todayCount.get(a.id) ?? 0) - (todayCount.get(b.id) ?? 0),
+      );
+      for (const template of ranked) {
+        if (tryPlace(nurse, template, day)) {
+          assigned.add(nurse.id);
+          offPlan.get(nurse.id)?.delete(key);
+          todayCount.set(template.id, (todayCount.get(template.id) ?? 0) + 1);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    for (const template of coverOrder) {
+      const onDuty = eligible.filter((n) => !offPlan.get(n.id)?.has(key));
+      if (takeFrom(onDuty, template)) continue;
+      const resting = eligible.filter((n) => offPlan.get(n.id)?.has(key));
+      if (takeFrom(resting, template)) continue;
+      unstaffedSlots += 1;
+    }
+
+    const leftover = eligible
+      .filter((n) => !assigned.has(n.id) && !offPlan.get(n.id)?.has(key))
+      .sort(sortByLoad);
+
+    for (const nurse of leftover) {
+      if (
+        assigned.size >= targetOnDuty &&
+        (offPlan.get(nurse.id)?.size ?? 0) < rdQuota
+      ) {
+        offPlan.get(nurse.id)!.add(key);
         continue;
       }
+      if (fillNurse(nurse)) continue;
+      if ((offPlan.get(nurse.id)?.size ?? 0) < rdQuota) {
+        offPlan.get(nurse.id)!.add(key);
+      }
+      blocked += 1;
     }
 
-    if (working.length > targetOnDuty) {
-      working.sort(
-        (a, b) =>
-          (workDays.get(a.id) ?? 0) - (workDays.get(b.id) ?? 0) ||
-          (offPlan.get(a.id)?.size ?? 0) - (offPlan.get(b.id)?.size ?? 0) ||
-          a.user.name.localeCompare(b.user.name),
-      );
-      const keep: NurseWithUser[] = [];
-      const extras: NurseWithUser[] = [];
-      for (const n of working) {
-        if (keep.length < targetOnDuty) keep.push(n);
-        else extras.push(n);
-      }
-      working = keep;
-      for (const n of extras) {
-        if ((offPlan.get(n.id)?.size ?? 0) < rdQuota) {
-          offPlan.get(n.id)!.add(key);
-        } else {
-          working.push(n);
-        }
-      }
-    }
-
-    const planned = balanceShiftTypes(working, placeTemplates, nightCounts);
-    let placedToday = 0;
-
-    for (const { nurse, template } of planned) {
-      if (placeNurse(nurse, template, day)) {
-        placedToday += 1;
-      } else {
-        if ((offPlan.get(nurse.id)?.size ?? 0) < rdQuota) {
-          offPlan.get(nurse.id)!.add(key);
-        }
-        blocked += 1;
-      }
-    }
-
-    if (placedToday === 0) {
-      const any = nurses.find(
-        (n) =>
-          n.licenseExpiresAt >= day &&
-          !onLeaveThatDay(n.id, day, leaveByNurse),
-      );
-      if (any) {
-        offPlan.get(any.id)?.delete(key);
-        if (placeNurse(any, placeTemplates[0], day)) {
-          placedToday = 1;
-        } else {
-          unstaffedDays += 1;
-        }
-      } else {
-        unstaffedDays += 1;
-      }
+    if ([...todayCount.values()].every((count) => count === 0)) {
+      unstaffedDays += 1;
     }
   }
 
@@ -430,10 +422,10 @@ export const generateRoster = async (params: {
     created,
     skipped: blocked,
     message: `Generated ${created} drafts. RD quota = ${rdQuota}/nurse (${weekendCount} weekends + ${holidayOnlyCount} holidays). ~${targetOnDuty} on duty/day. RD range ${minRd}–${maxRd}, avg work ${avgWork.toFixed(1)}/${workTarget}.${
-      unstaffedDays > 0
-        ? ` ${unstaffedDays} day(s) unstaffed.`
-        : " All days covered."
-    }`,
+      unstaffedSlots > 0
+        ? ` ${unstaffedSlots} shift slot(s) had no staff.`
+        : " All schedule-type shifts staffed."
+    }${unstaffedDays > 0 ? ` ${unstaffedDays} day(s) fully unstaffed.` : ""}`,
   };
 };
 
@@ -447,46 +439,6 @@ const orderTemplates = (templates: ShiftTemplate[]) => {
   return [...templates].sort(
     (a, b) => score(a) - score(b) || a.startTime.localeCompare(b.startTime),
   );
-};
-
-const balanceShiftTypes = (
-  working: NurseWithUser[],
-  templates: ShiftTemplate[],
-  nightCounts: Map<string, number>,
-) => {
-  const counts = templates.map(() => 0);
-  const result: { nurse: NurseWithUser; template: ShiftTemplate }[] = [];
-
-  const sorted = [...working].sort((a, b) =>
-    a.user.name.localeCompare(b.user.name),
-  );
-
-  for (const nurse of sorted) {
-    const prefs = parsePrefs(nurse.preferredShifts);
-    let bestIdx = 0;
-    let bestScore = Number.POSITIVE_INFINITY;
-
-    for (let i = 0; i < templates.length; i++) {
-      const t = templates[i];
-      const prefBonus = prefs.some((p) =>
-        t.name.toLowerCase().includes(p.toLowerCase()),
-      )
-        ? -0.5
-        : 0;
-      const nightPenalty =
-        t.isNight && (nightCounts.get(nurse.id) ?? 0) > 2 ? 2 : 0;
-      const score = counts[i] + prefBonus + nightPenalty;
-      if (score < bestScore) {
-        bestScore = score;
-        bestIdx = i;
-      }
-    }
-
-    counts[bestIdx] += 1;
-    result.push({ nurse, template: templates[bestIdx] });
-  }
-
-  return result;
 };
 
 const buildRestDayPlan = (params: {
