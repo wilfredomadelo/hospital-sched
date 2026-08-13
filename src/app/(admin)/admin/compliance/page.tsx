@@ -42,8 +42,8 @@ export default async function CompliancePage() {
                       <Badge
                         className={
                           alert.severity === "BLOCK"
-                            ? "bg-rose-50 text-rose-800"
-                            : "bg-amber-50 text-amber-800"
+                            ? "bg-rose-50 text-rose-800 dark:bg-rose-900/70 dark:text-rose-200"
+                            : "bg-amber-50 text-amber-800 dark:bg-amber-900/70 dark:text-amber-200"
                         }
                       >
                         {alert.severity}

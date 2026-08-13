@@ -14,7 +14,7 @@ export default async function NurseHomePage() {
   });
 
   if (!profile) {
-    return <p className="text-sm text-rose-600">Nurse profile not found.</p>;
+    return <p className="text-sm text-rose-600 dark:text-rose-400">Nurse profile not found.</p>;
   }
 
   const [shifts, unread] = await Promise.all([
@@ -81,11 +81,11 @@ export default async function NurseHomePage() {
                     </p>
                   </div>
                   {shift.template.isNight ? (
-                    <Badge className="bg-indigo-50 text-indigo-800">
+                    <Badge className="bg-indigo-50 text-indigo-800 dark:bg-indigo-900/70 dark:text-indigo-200">
                       {shift.template.name} overnight
                     </Badge>
                   ) : (
-                    <Badge className="bg-teal-50 text-teal-800">
+                    <Badge className="bg-teal-50 text-teal-800 dark:bg-teal-900/70 dark:text-teal-200">
                       {shift.template.name}
                     </Badge>
                   )}

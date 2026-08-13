@@ -47,7 +47,7 @@ export default async function AdminOverviewPage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {stats.map((stat) => (
           <Link key={stat.label} href={stat.href} className="block">
-            <Card className="transition hover:border-teal-300">
+            <Card className="transition hover:border-teal-300 dark:hover:border-teal-700">
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-slate-500">
                   {stat.label}
@@ -84,7 +84,7 @@ export default async function AdminOverviewPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge className="bg-teal-50 text-teal-800">
+                    <Badge className="bg-teal-50 text-teal-800 dark:bg-teal-900/70 dark:text-teal-200">
                       {format(shift.startAt, "EEE MMM d · HH:mm")}
                     </Badge>
                   </div>

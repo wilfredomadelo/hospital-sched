@@ -6,6 +6,7 @@ import { clearAuthCookiesAction } from "@/app/actions/clear-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ThemeToggle } from "@/components/theme-toggle";
 import {
   Card,
   CardContent,
@@ -23,7 +24,10 @@ export default function LoginPage() {
   }, []);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4">
+    <main className="relative mx-auto flex min-h-screen max-w-md flex-col justify-center px-4">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle />
+      </div>
       <Card>
         <CardHeader>
           <CardTitle className="font-display">Sign in</CardTitle>
@@ -58,7 +62,7 @@ export default function LoginPage() {
               />
             </div>
             {state?.error ? (
-              <p className="text-sm text-rose-600" role="alert">
+              <p className="text-sm text-rose-600 dark:text-rose-400" role="alert">
                 {state.error}
               </p>
             ) : null}

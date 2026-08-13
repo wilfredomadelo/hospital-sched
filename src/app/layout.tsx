@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Source_Sans_3, Libre_Baskerville } from "next/font/google";
+import { ThemeProvider } from "@/components/theme-provider";
+import { THEME_INIT_SCRIPT } from "@/lib/theme-script";
 import "./globals.css";
 
 const sans = Source_Sans_3({
@@ -24,9 +26,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${sans.variable} ${display.variable} h-full`}>
+    <html
+      lang="en"
+      className={`${sans.variable} ${display.variable} h-full`}
+      suppressHydrationWarning
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full bg-slate-50 font-sans text-slate-900 antialiased">
-        {children}
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );

@@ -26,7 +26,7 @@ export default async function RosterPage({
 
   const view = (["week", "15day", "month"].includes(params.view ?? "")
     ? params.view
-    : "15day") as RosterViewMode;
+    : "month") as RosterViewMode;
 
   const units = await prisma.unit.findMany({ orderBy: { name: "asc" } });
   const templates = await prisma.shiftTemplate.findMany({

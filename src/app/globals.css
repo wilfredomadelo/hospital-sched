@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #f8fafc;
   --foreground: #0f172a;
@@ -7,6 +9,30 @@
   --brand-dark: #115e59;
   --surface: #ffffff;
   --muted: #64748b;
+  color-scheme: light;
+}
+
+html.dark {
+  --background: #0b1220;
+  --foreground: #e2e8f0;
+  --brand: #2dd4bf;
+  --brand-dark: #5eead4;
+  --surface: #1e293b;
+  --muted: #94a3b8;
+  color-scheme: dark;
+
+  --color-white: #1e293b;
+  --color-slate-50: #0f172a;
+  --color-slate-100: #1e293b;
+  --color-slate-200: #334155;
+  --color-slate-300: #475569;
+  --color-slate-400: #64748b;
+  --color-slate-500: #94a3b8;
+  --color-slate-600: #cbd5e1;
+  --color-slate-700: #e2e8f0;
+  --color-slate-800: #f1f5f9;
+  --color-slate-900: #f8fafc;
+  --color-slate-950: #ffffff;
 }
 
 @theme inline {
@@ -23,6 +49,13 @@ body {
     var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+html.dark body {
+  background:
+    radial-gradient(ellipse 80% 50% at 0% -20%, rgba(45, 212, 191, 0.1), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 0%, rgba(56, 189, 248, 0.08), transparent),
+    var(--background);
 }
 
 .font-display {
