@@ -26,10 +26,15 @@ enum LeaveStatus {
 }
 
 enum LeaveType {
-  VACATION
-  SICK
-  PERSONAL
-  OTHER
+  VL
+  SL
+  PL
+  LV
+  QL
+  RL
+  PaL
+  ML
+  FL
 }
 
 enum AlertSeverity {

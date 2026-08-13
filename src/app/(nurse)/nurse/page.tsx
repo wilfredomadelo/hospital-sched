@@ -81,8 +81,14 @@ export default async function NurseHomePage() {
                     </p>
                   </div>
                   {shift.template.isNight ? (
-                    <Badge className="bg-indigo-50 text-indigo-800">Night</Badge>
-                  ) : null}
+                    <Badge className="bg-indigo-50 text-indigo-800">
+                      {shift.template.name} overnight
+                    </Badge>
+                  ) : (
+                    <Badge className="bg-teal-50 text-teal-800">
+                      {shift.template.name}
+                    </Badge>
+                  )}
                 </li>
               ))}
             </ul>

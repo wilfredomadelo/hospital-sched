@@ -74,11 +74,11 @@ export default async function RosterPage({
     }),
   ]);
 
-  const leaveKeys: string[] = [];
+  const leaveCodes: Record<string, string> = {};
   for (const leave of leaves) {
     for (const day of period.days) {
       if (day >= leave.startDate && day <= leave.endDate) {
-        leaveKeys.push(`${leave.nurseId}|${dateKey(day)}`);
+        leaveCodes[`${leave.nurseId}|${dateKey(day)}`] = leave.type;
       }
     }
   }
@@ -161,7 +161,7 @@ export default async function RosterPage({
             startLabel: format(a.startAt, "HH:mm"),
             endLabel: format(a.endAt, "HH:mm"),
           }))}
-          leaveKeys={leaveKeys}
+          leaveCodes={leaveCodes}
           holidayKeys={holidayKeys}
           holidayNames={holidayNames}
           templates={templates.map((t) => ({

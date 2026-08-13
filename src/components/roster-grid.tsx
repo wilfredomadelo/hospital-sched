@@ -15,12 +15,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
+import { RosterLegend } from "@/components/roster-legend";
 import {
-  SHIFT_COLORS,
-  colorKeyFromTemplate,
-  type ShiftColorKey,
-} from "@/lib/scheduling/shift-colors";
+  DUTY_CODES,
+  formatDutyLabel,
+  statusByCode,
+  styleForCode,
+} from "@/lib/scheduling/duty-codes";
 import { cn } from "@/lib/utils";
 
 export type RosterNurse = {
@@ -50,8 +51,6 @@ export type RosterTemplate = {
   isNight: boolean;
 };
 
-type CellKind = ShiftColorKey;
-
 type Props = {
   unitId: string;
   periodStart: string;
@@ -59,8 +58,8 @@ type Props = {
   days: string[];
   nurses: RosterNurse[];
   assignments: RosterAssignment[];
-  leaveKeys: string[]; // `${nurseId}|${dateKey}`
-  holidayKeys: string[]; // dateKey
+  leaveCodes: Record<string, string>;
+  holidayKeys: string[];
   holidayNames: Record<string, string>;
   templates: RosterTemplate[];
   view: string;
@@ -73,7 +72,7 @@ export const RosterGrid = ({
   days,
   nurses,
   assignments,
-  leaveKeys,
+  leaveCodes,
   holidayKeys,
   holidayNames,
   templates,
@@ -94,7 +93,6 @@ export const RosterGrid = ({
   const [fillMode, setFillMode] = useState(false);
   const [fillTemplateId, setFillTemplateId] = useState(templates[0]?.id ?? "");
 
-  const leaveSet = useMemo(() => new Set(leaveKeys), [leaveKeys]);
   const holidaySet = useMemo(() => new Set(holidayKeys), [holidayKeys]);
 
   const assignmentMap = useMemo(() => {
@@ -116,17 +114,16 @@ export const RosterGrid = ({
       }
       if (shiftFilter === "all") return true;
       return days.some((d) => {
+        const leave = leaveCodes[`${n.id}|${d}`];
+        if (shiftFilter === "RD") {
+          return !leave && !assignmentMap.get(`${n.id}|${d}`);
+        }
+        if (leave) return leave === shiftFilter;
         const a = assignmentMap.get(`${n.id}|${d}`);
-        if (!a) return shiftFilter === "off";
-        return (
-          colorKeyFromTemplate({
-            name: a.templateName,
-            isNight: a.isNight,
-          }) === shiftFilter
-        );
+        return a?.templateName === shiftFilter;
       });
     });
-  }, [nurses, nameFilter, shiftFilter, days, assignmentMap]);
+  }, [nurses, nameFilter, shiftFilter, days, assignmentMap, leaveCodes]);
 
   const applyResult = (result: AssignResult) => {
     if (result.error) {
@@ -144,7 +141,7 @@ export const RosterGrid = ({
   };
 
   const handleCellClick = (nurseId: string, dateKey: string) => {
-    if (leaveSet.has(`${nurseId}|${dateKey}`)) return;
+    if (leaveCodes[`${nurseId}|${dateKey}`]) return;
 
     if (fillMode && fillTemplateId) {
       startTransition(async () => {
@@ -191,7 +188,7 @@ export const RosterGrid = ({
     }
     startTransition(async () => {
       await bulkClearAssignments({ assignmentIds: [existing.id] });
-      setMessage("Assignment cleared.");
+      setMessage("Cleared — cell is RD (Rest Day).");
       setActiveCell(null);
       router.refresh();
     });
@@ -212,7 +209,7 @@ export const RosterGrid = ({
 
   const handleBulkAssign = () => {
     if (selectedNurses.size === 0 || !bulkTemplateId) {
-      setError("Select nurses and a shift type.");
+      setError("Select nurses and a duty code.");
       return;
     }
     startTransition(async () => {
@@ -245,43 +242,42 @@ export const RosterGrid = ({
   const cellMeta = (
     nurseId: string,
     d: string,
-  ): { kind: CellKind; label: string; title: string; assignment?: RosterAssignment } => {
-    if (leaveSet.has(`${nurseId}|${d}`)) {
-      return { kind: "leave", label: "L", title: "Approved leave" };
+  ): { code: string; title: string; assignment?: RosterAssignment; locked: boolean } => {
+    const leaveCode = leaveCodes[`${nurseId}|${d}`];
+    if (leaveCode) {
+      const status = statusByCode[leaveCode];
+      return {
+        code: leaveCode,
+        title: status?.description ?? leaveCode,
+        locked: true,
+      };
     }
     const a = assignmentMap.get(`${nurseId}|${d}`);
     if (a) {
-      const kind = colorKeyFromTemplate({
-        name: a.templateName,
-        isNight: a.isNight,
-      });
       const holidayNote = holidaySet.has(d)
         ? ` · ${holidayNames[d] || "Holiday"}`
         : "";
       return {
-        kind,
-        label: a.templateName.slice(0, 1),
-        title: `${a.templateName} ${a.startLabel}–${a.endLabel} (${a.status})${holidayNote}`,
+        code: a.templateName,
+        title: `${formatDutyLabel(a.templateName)} · ${a.startLabel}–${a.endLabel} (${a.status})${holidayNote}`,
         assignment: a,
+        locked: false,
       };
     }
     if (holidaySet.has(d)) {
       return {
-        kind: "holiday",
-        label: "H",
-        title: holidayNames[d] || "Public holiday (off)",
+        code: "RD",
+        title: `${holidayNames[d] || "Public holiday"} · Rest Day`,
+        locked: false,
       };
     }
-    return { kind: "off", label: "Off", title: "Rest day / unassigned" };
+    return { code: "RD", title: "Rest Day", locked: false };
   };
 
   const exportCsv = () => {
     const header = ["Nurse", "Employee ID", "Unit", ...days];
     const rows = filteredNurses.map((n) => {
-      const cells = days.map((d) => {
-        const meta = cellMeta(n.id, d);
-        return meta.assignment?.templateName ?? meta.kind;
-      });
+      const cells = days.map((d) => cellMeta(n.id, d).code);
       return [n.name, n.employeeId, n.unitName ?? "", ...cells];
     });
     const csv = [header, ...rows]
@@ -296,17 +292,15 @@ export const RosterGrid = ({
     URL.revokeObjectURL(url);
   };
 
+  const templateLabel = (t: RosterTemplate) => formatDutyLabel(t.name);
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
-        {Object.entries(SHIFT_COLORS).map(([key, style]) => (
-          <Badge
-            key={key}
-            className={cn(style.bg, style.text, "border", style.border)}
-          >
-            {style.label}
-          </Badge>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-slate-500">
+          Codes: duty (7, 7A, 3…) · RD rest · leave (VL, SL…)
+        </p>
+        <RosterLegend />
       </div>
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -321,27 +315,33 @@ export const RosterGrid = ({
           />
         </div>
         <div className="space-y-1">
-          <Label htmlFor="shift-filter">Shift type</Label>
+          <Label htmlFor="shift-filter">Code filter</Label>
           <Select
             id="shift-filter"
             value={shiftFilter}
             onChange={(e) => setShiftFilter(e.target.value)}
-            aria-label="Filter by shift type"
+            aria-label="Filter by duty code"
           >
             <option value="all">All</option>
-            <option value="day">Day</option>
-            <option value="evening">Evening</option>
-            <option value="night">Night</option>
-            <option value="off">Off only</option>
+            <option value="RD">RD</option>
+            {DUTY_CODES.map((d) => (
+              <option key={d.code} value={d.code}>
+                {d.code}
+              </option>
+            ))}
+            <option value="VL">VL</option>
+            <option value="SL">SL</option>
+            <option value="PL">PL</option>
+            <option value="LV">LV</option>
           </Select>
         </div>
         <div className="space-y-1">
-          <Label htmlFor="bulk-shift">Bulk shift</Label>
+          <Label htmlFor="bulk-shift">Bulk code</Label>
           <Select
             id="bulk-shift"
             value={bulkTemplateId}
             onChange={(e) => setBulkTemplateId(e.target.value)}
-            aria-label="Bulk shift type"
+            aria-label="Bulk duty code"
           >
             {templates.map((t) => (
               <option key={t.id} value={t.id}>
@@ -381,7 +381,7 @@ export const RosterGrid = ({
           <Select
             value={fillTemplateId}
             onChange={(e) => setFillTemplateId(e.target.value)}
-            aria-label="Fill shift type"
+            aria-label="Fill duty code"
           >
             {templates.map((t) => (
               <option key={t.id} value={t.id}>
@@ -483,17 +483,16 @@ export const RosterGrid = ({
                 </td>
                 {days.map((d) => {
                   const meta = cellMeta(nurse.id, d);
-                  const colors = SHIFT_COLORS[meta.kind];
+                  const colors = styleForCode(meta.code);
                   const isActive =
                     activeCell?.nurseId === nurse.id &&
                     activeCell?.dateKey === d;
-                  const locked = meta.kind === "leave";
                   return (
                     <td key={d} className="border-b border-slate-100 p-0.5">
                       <button
                         type="button"
                         title={meta.title}
-                        disabled={locked || pending}
+                        disabled={meta.locked || pending}
                         onClick={() => handleCellClick(nurse.id, d)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
@@ -504,16 +503,16 @@ export const RosterGrid = ({
                         aria-label={`${nurse.name} on ${d}: ${meta.title}`}
                         tabIndex={0}
                         className={cn(
-                          "flex h-10 w-full flex-col items-center justify-center rounded border text-xs font-semibold transition",
+                          "flex h-10 w-full flex-col items-center justify-center rounded border text-[11px] font-bold transition",
                           colors.bg,
                           colors.text,
                           colors.border,
                           isActive && "ring-2 ring-teal-600",
-                          !locked && "hover:brightness-95",
-                          locked && "cursor-default opacity-90",
+                          !meta.locked && "hover:brightness-95",
+                          meta.locked && "cursor-default opacity-90",
                         )}
                       >
-                        <span>{meta.label}</span>
+                        <span>{meta.code}</span>
                         {meta.assignment?.status === "DRAFT" ? (
                           <span className="text-[9px] font-normal opacity-70">
                             draft
@@ -537,41 +536,43 @@ export const RosterGrid = ({
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
           role="dialog"
           aria-modal="true"
-          aria-label="Assign shift"
+          aria-label="Assign duty code"
           onClick={() => setActiveCell(null)}
           onKeyDown={(e) => {
             if (e.key === "Escape") setActiveCell(null);
           }}
         >
           <div
-            className="w-full max-w-sm rounded-lg bg-white p-4 shadow-lg"
+            className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg bg-white p-4 shadow-lg"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="font-display text-lg font-bold">Assign shift</h3>
+            <h3 className="font-display text-lg font-bold">Assign code</h3>
             <p className="mt-1 text-sm text-slate-600">
               {nurses.find((n) => n.id === activeCell.nurseId)?.name} ·{" "}
               {activeCell.dateKey}
             </p>
-            <div className="mt-4 grid gap-2">
+            <div className="mt-4 grid max-h-[50vh] gap-1.5 overflow-y-auto">
               {templates.map((t) => (
                 <Button
                   key={t.id}
                   type="button"
                   variant="outline"
-                  className="justify-start"
+                  className="justify-start text-left"
                   disabled={pending}
                   onClick={() => handleAssignToCell(t.id)}
                 >
-                  {t.name} ({t.startTime}–{t.endTime})
+                  {templateLabel(t)}
                 </Button>
               ))}
+            </div>
+            <div className="mt-3 flex flex-col gap-2">
               <Button
                 type="button"
                 variant="danger"
                 disabled={pending}
                 onClick={handleClearCell}
               >
-                Clear / mark Off
+                Clear / RD (Rest Day)
               </Button>
               <Button
                 type="button"

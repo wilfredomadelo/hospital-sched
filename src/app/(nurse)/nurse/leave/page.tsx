@@ -67,11 +67,16 @@ export default async function NurseLeavePage() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="type">Type</Label>
-              <Select id="type" name="type" defaultValue="VACATION" required>
-                <option value="VACATION">Vacation</option>
-                <option value="SICK">Sick</option>
-                <option value="PERSONAL">Personal</option>
-                <option value="OTHER">Other</option>
+              <Select id="type" name="type" defaultValue="VL" required>
+                <option value="VL">VL · Vacation Leave</option>
+                <option value="SL">SL · Sick Leave</option>
+                <option value="PL">PL · Privilege Leave</option>
+                <option value="LV">LV · Leave</option>
+                <option value="QL">QL · Quarantine Leave</option>
+                <option value="RL">RL · Rehabilitation Leave</option>
+                <option value="PaL">PaL · Paternity Leave</option>
+                <option value="ML">ML · Maternity Leave</option>
+                <option value="FL">FL · Force Leave</option>
               </Select>
             </div>
             <div className="space-y-1 sm:col-span-2">

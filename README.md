@@ -52,6 +52,56 @@ Password for all accounts: `password123`
 - Workforce analytics dashboard
 - In-app notifications on leave decisions and publish
 
+## Deploy to Vercel + Turso
+
+Local `file:./dev.db` does **not** work on Vercel. Use Turso (SQLite-compatible cloud).
+
+### 1. Create a Turso database
+
+In [Turso](https://turso.tech) dashboard or CLI:
+
+```bash
+# one-time
+npm i -g @turso/cli
+turso auth login
+turso db create hospital-sched
+turso db show hospital-sched --url
+turso db tokens create hospital-sched
+```
+
+Copy the **URL** (`libsql://…`) and **token**.
+
+### 2. Put secrets in `.env` (and Vercel)
+
+```env
+# REQUIRED for Prisma CLI — must stay file:
+DATABASE_URL="file:./dev.db"
+
+TURSO_DATABASE_URL="libsql://YOUR-DB.turso.io"
+TURSO_AUTH_TOKEN="your-token"
+AUTH_SECRET="long-random-string"
+AUTH_URL="https://your-app.vercel.app"
+```
+
+Do **not** put `libsql://` in `DATABASE_URL` — Prisma will error with “URL must start with file:”.
+
+### 3. Push schema + seed to Turso
+
+```bash
+npm run db:setup:turso
+```
+
+Or step by step:
+
+```bash
+npm run db:push:turso
+npm run db:seed:turso
+```
+
+### 4. Vercel project env vars
+
+Add: `DATABASE_URL=file:./dev.db` (placeholder for build), `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `AUTH_SECRET`, `AUTH_URL`.
+
 ## Scripts
 
 | Script             | Description                        |

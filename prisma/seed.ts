@@ -1,14 +1,16 @@
+import "dotenv/config";
 import bcrypt from "bcryptjs";
 import {
   LeaveStatus,
   LeaveType,
   Role,
   ShiftStatus,
-  PrismaClient,
 } from "@prisma/client";
 import { addDays, setHours, setMinutes, startOfWeek } from "date-fns";
+import { DUTY_CODES } from "../src/lib/scheduling/duty-codes";
+import { createPrismaClient } from "../src/lib/create-prisma";
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 
 const combineDateAndTime = (date: Date, time: string) => {
   const [h, m] = time.split(":").map(Number);
@@ -16,39 +18,13 @@ const combineDateAndTime = (date: Date, time: string) => {
 };
 
 const FIRST_NAMES = [
-  "Nina",
-  "Jordan",
-  "Morgan",
-  "Casey",
-  "Riley",
-  "Avery",
-  "Quinn",
-  "Harper",
-  "Reese",
-  "Skyler",
-  "Cameron",
-  "Drew",
-  "Jamie",
-  "Taylor",
-  "Alexis",
+  "Nina", "Jordan", "Morgan", "Casey", "Riley", "Avery", "Quinn",
+  "Harper", "Reese", "Skyler", "Cameron", "Drew", "Jamie", "Taylor", "Alexis",
 ];
 
 const LAST_NAMES = [
-  "Patel",
-  "Lee",
-  "Chen",
-  "Brooks",
-  "Santos",
-  "Nguyen",
-  "Garcia",
-  "Kim",
-  "Walsh",
-  "Torres",
-  "Singh",
-  "Okafor",
-  "Murphy",
-  "Ali",
-  "Bennett",
+  "Patel", "Lee", "Chen", "Brooks", "Santos", "Nguyen", "Garcia",
+  "Kim", "Walsh", "Torres", "Singh", "Okafor", "Murphy", "Ali", "Bennett",
 ];
 
 const ICU_SKILLS = [
@@ -67,7 +43,7 @@ const ER_SKILLS = [
   ["Trauma"],
 ];
 
-const PREFS = [["Day"], ["Evening"], ["Night"], ["Day", "Evening"], ["Evening", "Night"]];
+const PREFS = [["7"], ["3"], ["11"], ["7", "3"], ["7P", "11"]];
 
 const buildNurseDefs = (unitId: string, unitCode: "icu" | "er", count: number) => {
   const skillsPool = unitCode === "icu" ? ICU_SKILLS : ER_SKILLS;
@@ -118,45 +94,40 @@ async function main() {
   });
 
   const icu = await prisma.unit.create({
-    data: {
-      name: "ICU",
-      description: "Intensive Care Unit",
-    },
+    data: { name: "ICU", description: "Intensive Care Unit" },
   });
 
   const er = await prisma.unit.create({
-    data: {
-      name: "ER",
-      description: "Emergency Room",
-    },
+    data: { name: "ER", description: "Emergency Room" },
   });
 
-  const day = await prisma.shiftTemplate.create({
-    data: {
-      name: "Day",
-      startTime: "07:00",
-      endTime: "15:00",
-      isNight: false,
-    },
-  });
+  const dutyTemplates = [];
+  for (const duty of DUTY_CODES) {
+    const t = await prisma.shiftTemplate.create({
+      data: {
+        name: duty.code,
+        startTime: duty.startTime,
+        endTime: duty.endTime,
+        isNight: duty.crossesMidnight,
+      },
+    });
+    dutyTemplates.push(t);
+  }
 
-  const evening = await prisma.shiftTemplate.create({
-    data: {
-      name: "Evening",
-      startTime: "15:00",
-      endTime: "23:00",
-      isNight: false,
-    },
-  });
-
-  const night = await prisma.shiftTemplate.create({
-    data: {
-      name: "Night",
-      startTime: "23:00",
-      endTime: "07:00",
-      isNight: true,
-    },
-  });
+  for (const status of [
+    { code: "L", start: "00:00", end: "23:59" },
+    { code: "C", start: "00:00", end: "23:59" },
+    { code: "RD", start: "00:00", end: "23:59" },
+  ]) {
+    await prisma.shiftTemplate.create({
+      data: {
+        name: status.code,
+        startTime: status.start,
+        endTime: status.end,
+        isNight: false,
+      },
+    });
+  }
 
   const nurseDefs = [
     ...buildNurseDefs(icu.id, "icu", 15),
@@ -196,13 +167,16 @@ async function main() {
     },
   });
 
-  const templates = [day, evening, night];
+  const sampleCodes = ["7", "3", "11", "7A", "6P"];
+  const sampleTemplates = dutyTemplates.filter((t) =>
+    sampleCodes.includes(t.name),
+  );
 
   for (let d = 0; d < 5; d++) {
     const dayDate = addDays(weekStart, d);
     const nurse = nurses[d % nurses.length];
     const profile = nurse.nurseProfile!;
-    const template = templates[d % templates.length];
+    const template = sampleTemplates[d % sampleTemplates.length];
     let startAt = combineDateAndTime(dayDate, template.startTime);
     let endAt = combineDateAndTime(dayDate, template.endTime);
     if (template.isNight) {
@@ -226,7 +200,7 @@ async function main() {
       nurseId: nurses[0].nurseProfile!.id,
       startDate: addDays(weekStart, 10),
       endDate: addDays(weekStart, 12),
-      type: LeaveType.VACATION,
+      type: LeaveType.VL,
       status: LeaveStatus.PENDING,
       reason: "Family trip",
     },
@@ -244,9 +218,9 @@ async function main() {
   console.log("Logins (password: password123):");
   console.log(`  Admin:      ${admin.email}`);
   console.log(`  Supervisor: ${supervisor.email}`);
+  console.log(`  Duty templates: ${dutyTemplates.length} + L/C/RD`);
   console.log(`  ICU nurses: nurse1@hospital.local … nurse15@hospital.local`);
   console.log(`  ER nurses:  nurse101@hospital.local … nurse115@hospital.local`);
-  console.log(`  Totals:     15 ICU + 15 ER`);
 }
 
 main()

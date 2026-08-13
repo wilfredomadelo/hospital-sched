@@ -10,7 +10,7 @@ import { createNotification } from "@/lib/notifications";
 const leaveSchema = z.object({
   startDate: z.string().min(1),
   endDate: z.string().min(1),
-  type: z.enum(["VACATION", "SICK", "PERSONAL", "OTHER"]),
+  type: z.enum(["VL", "SL", "PL", "LV", "QL", "RL", "PaL", "ML", "FL"]),
   reason: z.string().max(500).optional(),
 });
 

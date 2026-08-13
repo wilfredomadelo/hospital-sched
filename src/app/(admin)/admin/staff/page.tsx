@@ -157,7 +157,7 @@ export default async function StaffPage({
                 <Input
                   id="preferredShifts"
                   name="preferredShifts"
-                  placeholder="Day, Night"
+                  placeholder="7, 3, 11"
                   aria-label="Preferred shifts"
                 />
               </div>

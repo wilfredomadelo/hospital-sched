@@ -17,6 +17,7 @@ import {
   hasBlockingIssues,
   persistAlerts,
 } from "@/lib/scheduling/compliance";
+import { DUTY_CODES } from "@/lib/scheduling/duty-codes";
 
 const combineDateAndTime = (date: Date, time: string) => {
   const [h, m] = time.split(":").map(Number);
@@ -128,7 +129,26 @@ export const generateRoster = async (params: {
   ).length;
   const workTarget = Math.max(0, dayCount - offQuota);
 
-  const orderedTemplates = orderTemplates(templates);
+  const dutyNames = new Set(DUTY_CODES.map((d) => d.code));
+  // Prefer common 8h duties for auto-fill balance
+  const preferredAuto = ["7", "3", "11", "6", "8", "2", "10", "12"];
+  const orderedTemplates = orderTemplates(
+    templates.filter((t) => dutyNames.has(t.name)),
+  ).sort((a, b) => {
+    const ia = preferredAuto.indexOf(a.name);
+    const ib = preferredAuto.indexOf(b.name);
+    const sa = ia === -1 ? 99 : ia;
+    const sb = ib === -1 ? 99 : ib;
+    return sa - sb || a.startTime.localeCompare(b.startTime);
+  });
+
+  if (orderedTemplates.length === 0) {
+    return {
+      created: 0,
+      skipped: 0,
+      message: "No duty-code templates found. Re-run db seed.",
+    };
+  }
   const minOnDuty = Math.max(1, Math.min(orderedTemplates.length, nurses.length));
   const targetOnDuty = Math.max(
     minOnDuty,
@@ -347,9 +367,9 @@ const placeNurseShift = async (params: {
 
 const orderTemplates = (templates: ShiftTemplate[]) => {
   const score = (t: ShiftTemplate) => {
-    const n = t.name.toLowerCase();
-    if (t.isNight || n.includes("night")) return 2;
-    if (n.includes("evening")) return 1;
+    if (t.isNight) return 2;
+    const hour = Number(t.startTime.split(":")[0] ?? 0);
+    if (hour >= 14) return 1;
     return 0;
   };
   return [...templates].sort(
