@@ -47,9 +47,9 @@ export const DUTY_CODES: DutyCodeDef[] = [
 
 /** Non-duty status / leave codes for the legend. */
 export const STATUS_CODES: StatusCodeDef[] = [
-  { code: "L", description: "Lacking Off", kind: "status" },
+  { code: "L", description: "Lacking Rest Day", kind: "status" },
   { code: "C", description: "Compensatory", kind: "status" },
-  { code: "RD", description: "Rest Day", kind: "status" },
+  { code: "RD", description: "Rest Day (RD)", kind: "status" },
   { code: "LV", description: "Leave", kind: "leave" },
   { code: "QL", description: "Quarantine Leave", kind: "leave" },
   { code: "RL", description: "Rehabilitation Leave", kind: "leave" },

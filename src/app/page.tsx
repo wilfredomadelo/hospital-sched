@@ -1,11 +1,11 @@
 import Link from "next/link";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { homeForRole } from "@/lib/session";
 import { redirect } from "next/navigation";
 
 export default async function HomePage() {
-  const session = await auth();
-  if (session?.user) redirect(homeForRole(session.user.role));
+  const session = await getSession();
+  if (session?.user?.role) redirect(homeForRole(session.user.role));
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center px-6 py-16">

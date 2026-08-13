@@ -1,7 +1,8 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect } from "react";
 import { loginAction } from "@/app/actions/auth";
+import { clearAuthCookiesAction } from "@/app/actions/clear-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +16,11 @@ import {
 
 export default function LoginPage() {
   const [state, formAction, pending] = useActionState(loginAction, undefined);
+
+  // Clear stale session cookies (e.g. after AUTH_SECRET change) once on visit
+  useEffect(() => {
+    void clearAuthCookiesAction();
+  }, []);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4">

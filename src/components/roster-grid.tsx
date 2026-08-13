@@ -188,7 +188,7 @@ export const RosterGrid = ({
     }
     startTransition(async () => {
       await bulkClearAssignments({ assignmentIds: [existing.id] });
-      setMessage("Cleared — cell is RD (Rest Day).");
+      setMessage("Cleared — cell is Rest Day (RD).");
       setActiveCell(null);
       router.refresh();
     });
@@ -267,11 +267,11 @@ export const RosterGrid = ({
     if (holidaySet.has(d)) {
       return {
         code: "RD",
-        title: `${holidayNames[d] || "Public holiday"} · Rest Day`,
+        title: `${holidayNames[d] || "Public holiday"} · Rest Day (RD)`,
         locked: false,
       };
     }
-    return { code: "RD", title: "Rest Day", locked: false };
+    return { code: "RD", title: "Rest Day (RD)", locked: false };
   };
 
   const exportCsv = () => {
@@ -298,7 +298,9 @@ export const RosterGrid = ({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-slate-500">
-          Codes: duty (7, 7A, 3…) · RD rest · leave (VL, SL…)
+          Codes: duty (7, 7A, 3…) · Rest Day (RD) · leave (VL, SL…). Auto-generate:
+          RD per nurse = Saturdays + Sundays + holidays in this period; staffing
+          spread evenly across days.
         </p>
         <RosterLegend />
       </div>
@@ -323,7 +325,7 @@ export const RosterGrid = ({
             aria-label="Filter by duty code"
           >
             <option value="all">All</option>
-            <option value="RD">RD</option>
+            <option value="RD">Rest Day (RD)</option>
             {DUTY_CODES.map((d) => (
               <option key={d.code} value={d.code}>
                 {d.code}
@@ -405,6 +407,8 @@ export const RosterGrid = ({
               applyResult(await runAutoRoster(fd));
             });
           }}
+          title="Each nurse gets Rest Days (RD) equal to Saturdays + Sundays + holidays in this period. Work and RD days are spread evenly."
+          aria-label="Auto-generate schedule with Rest Day quota from weekends and holidays"
         >
           Auto-generate
         </Button>
@@ -437,24 +441,26 @@ export const RosterGrid = ({
         </p>
       ) : null}
 
-      <div className="overflow-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table className="min-w-full border-collapse text-sm">
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+        <table className="w-full table-fixed border-collapse text-xs">
           <thead>
             <tr className="bg-slate-50">
-              <th className="sticky left-0 z-20 min-w-[200px] border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left font-semibold">
+              <th className="sticky left-0 z-20 w-32 border-b border-r border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-semibold">
                 Nurse
               </th>
               {days.map((d) => (
                 <th
                   key={d}
                   className={cn(
-                    "min-w-[72px] border-b border-slate-200 px-1 py-2 text-center font-medium",
+                    "border-b border-slate-200 px-0 py-1 text-center font-medium leading-tight",
                     holidaySet.has(d) && "bg-slate-100",
                   )}
                 >
-                  <div>{format(new Date(d + "T12:00:00"), "EEE")}</div>
-                  <div className="text-xs font-normal text-slate-500">
-                    {format(new Date(d + "T12:00:00"), "MMM d")}
+                  <div className="text-[10px] uppercase text-slate-500">
+                    {format(new Date(d + "T12:00:00"), "EEEEE")}
+                  </div>
+                  <div className="text-[11px]">
+                    {format(new Date(d + "T12:00:00"), "d")}
                   </div>
                 </th>
               ))}
@@ -463,18 +469,20 @@ export const RosterGrid = ({
           <tbody>
             {filteredNurses.map((nurse) => (
               <tr key={nurse.id} className="hover:bg-slate-50/80">
-                <td className="sticky left-0 z-10 border-b border-r border-slate-200 bg-white px-3 py-1">
-                  <label className="flex cursor-pointer items-start gap-2">
+                <td className="sticky left-0 z-10 w-32 overflow-hidden border-b border-r border-slate-200 bg-white px-2 py-0.5">
+                  <label className="flex cursor-pointer items-start gap-1.5">
                     <input
                       type="checkbox"
-                      className="mt-1"
+                      className="mt-1 shrink-0"
                       checked={selectedNurses.has(nurse.id)}
                       onChange={() => toggleNurse(nurse.id)}
                       aria-label={`Select ${nurse.name}`}
                     />
-                    <span>
-                      <span className="block font-medium">{nurse.name}</span>
-                      <span className="block text-xs text-slate-500">
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium leading-tight">
+                        {nurse.name}
+                      </span>
+                      <span className="block truncate text-[10px] text-slate-500">
                         {nurse.employeeId}
                         {nurse.unitName ? ` · ${nurse.unitName}` : ""}
                       </span>
@@ -488,7 +496,7 @@ export const RosterGrid = ({
                     activeCell?.nurseId === nurse.id &&
                     activeCell?.dateKey === d;
                   return (
-                    <td key={d} className="border-b border-slate-100 p-0.5">
+                    <td key={d} className="border-b border-slate-100 p-px">
                       <button
                         type="button"
                         title={meta.title}
@@ -503,21 +511,17 @@ export const RosterGrid = ({
                         aria-label={`${nurse.name} on ${d}: ${meta.title}`}
                         tabIndex={0}
                         className={cn(
-                          "flex h-10 w-full flex-col items-center justify-center rounded border text-[11px] font-bold transition",
+                          "flex h-7 w-full items-center justify-center rounded-sm border text-[10px] font-bold leading-none transition",
                           colors.bg,
                           colors.text,
                           colors.border,
                           isActive && "ring-2 ring-teal-600",
                           !meta.locked && "hover:brightness-95",
                           meta.locked && "cursor-default opacity-90",
+                          meta.assignment?.status === "DRAFT" && "opacity-80",
                         )}
                       >
                         <span>{meta.code}</span>
-                        {meta.assignment?.status === "DRAFT" ? (
-                          <span className="text-[9px] font-normal opacity-70">
-                            draft
-                          </span>
-                        ) : null}
                       </button>
                     </td>
                   );
@@ -572,7 +576,7 @@ export const RosterGrid = ({
                 disabled={pending}
                 onClick={handleClearCell}
               >
-                Clear / RD (Rest Day)
+                Clear / Rest Day (RD)
               </Button>
               <Button
                 type="button"

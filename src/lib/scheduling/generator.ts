@@ -12,11 +12,6 @@ import {
   type ShiftTemplate,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import {
-  evaluateAssignment,
-  hasBlockingIssues,
-  persistAlerts,
-} from "@/lib/scheduling/compliance";
 import { DUTY_CODES } from "@/lib/scheduling/duty-codes";
 
 const combineDateAndTime = (date: Date, time: string) => {
@@ -31,8 +26,31 @@ const isWeekend = (d: Date) => {
   return day === 0 || day === 6;
 };
 
+const intervalsOverlap = (
+  aStart: Date,
+  aEnd: Date,
+  bStart: Date,
+  bEnd: Date,
+) => aStart < bEnd && bStart < aEnd;
+
 type NurseWithUser = NurseProfile & {
   user: { id: string; name: string };
+};
+
+type MemAssignment = {
+  id: string;
+  nurseId: string;
+  startAt: Date;
+  endAt: Date;
+};
+
+type PendingCreate = {
+  nurseId: string;
+  unitId: string;
+  templateId: string;
+  startAt: Date;
+  endAt: Date;
+  status: typeof ShiftStatus.DRAFT;
 };
 
 const parsePrefs = (raw: string) => {
@@ -52,12 +70,44 @@ const onLeaveThatDay = (
   return leaves.some((l) => l.startDate <= day && l.endDate >= day);
 };
 
+const onLeaveOverlap = (
+  nurseId: string,
+  startAt: Date,
+  endAt: Date,
+  leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>,
+) => {
+  const leaves = leaveByNurse.get(nurseId) ?? [];
+  return leaves.some((l) => l.startDate <= endAt && l.endDate >= startAt);
+};
+
+/** In-memory hard blocks only (no DB). Soft warnings are ignored during auto-gen. */
+const isBlocked = (params: {
+  nurse: NurseWithUser;
+  startAt: Date;
+  endAt: Date;
+  existing: MemAssignment[];
+  leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>;
+}) => {
+  const { nurse, startAt, endAt, existing, leaveByNurse } = params;
+  if (nurse.licenseExpiresAt < startAt) return true;
+  if (onLeaveOverlap(nurse.id, startAt, endAt, leaveByNurse)) return true;
+  for (const other of existing) {
+    if (intervalsOverlap(startAt, endAt, other.startAt, other.endAt)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 /**
  * Auto-roster rules:
- * - Off days per nurse = Saturdays + Sundays + holidays in the period
+ * - Rest Day (RD) per nurse = count of Saturdays + Sundays + public holidays
+ *   in the selected period (holiday on a weekend counts once)
  * - Remaining days are work days
- * - On-duty headcount spread evenly across days
+ * - RDs and on-duty headcount spread as evenly as possible across days
  * - Every day has at least one nurse on duty
+ *
+ * Performance: plan + validate in memory, then one batched createMany.
  */
 export const generateRoster = async (params: {
   unitId: string;
@@ -109,6 +159,23 @@ export const generateRoster = async (params: {
     });
   }
 
+  const nurseIds = nurses.map((n) => n.id);
+
+  // One fetch of remaining assignments (published / outside period) for overlap checks
+  const existingRows = await prisma.shiftAssignment.findMany({
+    where: {
+      nurseId: { in: nurseIds },
+      status: { in: [ShiftStatus.DRAFT, ShiftStatus.PUBLISHED] },
+    },
+    select: { id: true, nurseId: true, startAt: true, endAt: true },
+  });
+
+  const byNurse = new Map<string, MemAssignment[]>();
+  for (const id of nurseIds) byNurse.set(id, []);
+  for (const row of existingRows) {
+    byNurse.get(row.nurseId)?.push(row);
+  }
+
   const holidayKeys = new Set(holidays.map((h) => dayKey(h.date)));
   const leaveByNurse = new Map<string, typeof leaves>();
   for (const leave of leaves) {
@@ -124,55 +191,125 @@ export const generateRoster = async (params: {
     addDays(periodStart, i),
   );
 
-  const offQuota = days.filter(
-    (d) => isWeekend(d) || holidayKeys.has(dayKey(d)),
+  const weekendCount = days.filter((d) => isWeekend(d)).length;
+  const holidayOnlyCount = days.filter(
+    (d) => holidayKeys.has(dayKey(d)) && !isWeekend(d),
   ).length;
-  const workTarget = Math.max(0, dayCount - offQuota);
+  const rdQuota = weekendCount + holidayOnlyCount;
+  const workTarget = Math.max(0, dayCount - rdQuota);
 
   const dutyNames = new Set(DUTY_CODES.map((d) => d.code));
-  // Prefer common 8h duties for auto-fill balance
+  // Keep auto-fill to a small duty set — fewer tries, faster, more consistent
   const preferredAuto = ["7", "3", "11", "6", "8", "2", "10", "12"];
   const orderedTemplates = orderTemplates(
     templates.filter((t) => dutyNames.has(t.name)),
-  ).sort((a, b) => {
-    const ia = preferredAuto.indexOf(a.name);
-    const ib = preferredAuto.indexOf(b.name);
-    const sa = ia === -1 ? 99 : ia;
-    const sb = ib === -1 ? 99 : ib;
-    return sa - sb || a.startTime.localeCompare(b.startTime);
-  });
+  )
+    .sort((a, b) => {
+      const ia = preferredAuto.indexOf(a.name);
+      const ib = preferredAuto.indexOf(b.name);
+      const sa = ia === -1 ? 99 : ia;
+      const sb = ib === -1 ? 99 : ib;
+      return sa - sb || a.startTime.localeCompare(b.startTime);
+    })
+    .filter((t) => preferredAuto.includes(t.name));
 
-  if (orderedTemplates.length === 0) {
+  // Fall back to any duty templates if preferred set missing from DB
+  const placeTemplates =
+    orderedTemplates.length > 0
+      ? orderedTemplates
+      : orderTemplates(templates.filter((t) => dutyNames.has(t.name))).slice(
+          0,
+          8,
+        );
+
+  if (placeTemplates.length === 0) {
     return {
       created: 0,
       skipped: 0,
       message: "No duty-code templates found. Re-run db seed.",
     };
   }
-  const minOnDuty = Math.max(1, Math.min(orderedTemplates.length, nurses.length));
+
+  const minOnDuty = Math.max(1, Math.min(placeTemplates.length, nurses.length));
   const targetOnDuty = Math.max(
     minOnDuty,
     Math.round((nurses.length * workTarget) / Math.max(1, dayCount)),
   );
 
-  const offPlan = buildOffPlan({
+  const offPlan = buildRestDayPlan({
     nurses,
     days,
     leaveByNurse,
-    offQuota,
+    rdQuota,
     minOnDuty,
     targetOnDuty,
   });
 
   const nightCounts = new Map(nurses.map((n) => [n.id, 0]));
   const workDays = new Map(nurses.map((n) => [n.id, 0]));
-  let created = 0;
+  const pending: PendingCreate[] = [];
   let blocked = 0;
   let unstaffedDays = 0;
+  let memId = 0;
+
+  const tryPlace = (
+    nurse: NurseWithUser,
+    template: ShiftTemplate,
+    day: Date,
+  ) => {
+    let startAt = combineDateAndTime(day, template.startTime);
+    let endAt = combineDateAndTime(day, template.endTime);
+    if (template.isNight) {
+      endAt = combineDateAndTime(addDays(day, 1), template.endTime);
+    }
+
+    const existing = byNurse.get(nurse.id) ?? [];
+    if (
+      isBlocked({
+        nurse,
+        startAt,
+        endAt,
+        existing,
+        leaveByNurse,
+      })
+    ) {
+      return false;
+    }
+
+    memId += 1;
+    const id = `pending-${memId}`;
+    existing.push({ id, nurseId: nurse.id, startAt, endAt });
+    pending.push({
+      nurseId: nurse.id,
+      unitId,
+      templateId: template.id,
+      startAt,
+      endAt,
+      status: ShiftStatus.DRAFT,
+    });
+    workDays.set(nurse.id, (workDays.get(nurse.id) ?? 0) + 1);
+    if (template.isNight) {
+      nightCounts.set(nurse.id, (nightCounts.get(nurse.id) ?? 0) + 1);
+    }
+    return true;
+  };
+
+  const placeNurse = (
+    nurse: NurseWithUser,
+    preferred: ShiftTemplate,
+    day: Date,
+  ) => {
+    if (tryPlace(nurse, preferred, day)) return true;
+    for (const alt of placeTemplates) {
+      if (alt.id === preferred.id) continue;
+      if (tryPlace(nurse, alt, day)) return true;
+    }
+    return false;
+  };
 
   for (const day of days) {
     const key = dayKey(day);
-    let working = nurses.filter((n) => {
+    let working: NurseWithUser[] = nurses.filter((n) => {
       if (offPlan.get(n.id)?.has(key)) return false;
       if (n.licenseExpiresAt < day) return false;
       if (onLeaveThatDay(n.id, day, leaveByNurse)) return false;
@@ -201,53 +338,44 @@ export const generateRoster = async (params: {
       }
     }
 
-    // Keep daily headcount near target
     if (working.length > targetOnDuty) {
       working.sort(
         (a, b) =>
           (workDays.get(a.id) ?? 0) - (workDays.get(b.id) ?? 0) ||
+          (offPlan.get(a.id)?.size ?? 0) - (offPlan.get(b.id)?.size ?? 0) ||
           a.user.name.localeCompare(b.user.name),
       );
-      const keep = working.slice(0, targetOnDuty);
-      const extras = working.slice(targetOnDuty);
+      const keep: NurseWithUser[] = [];
+      const extras: NurseWithUser[] = [];
+      for (const n of working) {
+        if (keep.length < targetOnDuty) keep.push(n);
+        else extras.push(n);
+      }
       working = keep;
       for (const n of extras) {
-        if ((offPlan.get(n.id)?.size ?? 0) < offQuota) {
+        if ((offPlan.get(n.id)?.size ?? 0) < rdQuota) {
           offPlan.get(n.id)!.add(key);
+        } else {
+          working.push(n);
         }
       }
     }
 
-    const assignments = balanceShiftTypes(working, orderedTemplates, nightCounts);
+    const planned = balanceShiftTypes(working, placeTemplates, nightCounts);
+    let placedToday = 0;
 
-    for (const { nurse, template } of assignments) {
-      const placed = await placeNurseShift({
-        nurse,
-        templates: orderedTemplates,
-        preferred: template,
-        day,
-        unitId,
-        nightCounts,
-        workDays,
-      });
-
-      if (placed) created += 1;
-      else {
-        offPlan.get(nurse.id)?.add(key);
+    for (const { nurse, template } of planned) {
+      if (placeNurse(nurse, template, day)) {
+        placedToday += 1;
+      } else {
+        if ((offPlan.get(nurse.id)?.size ?? 0) < rdQuota) {
+          offPlan.get(nurse.id)!.add(key);
+        }
         blocked += 1;
       }
     }
 
-    const dayStart = combineDateAndTime(day, "00:00");
-    const onDuty = await prisma.shiftAssignment.count({
-      where: {
-        unitId,
-        status: { in: [ShiftStatus.DRAFT, ShiftStatus.PUBLISHED] },
-        startAt: { gte: dayStart, lt: addDays(dayStart, 1) },
-      },
-    });
-
-    if (onDuty === 0) {
+    if (placedToday === 0) {
       const any = nurses.find(
         (n) =>
           n.licenseExpiresAt >= day &&
@@ -255,27 +383,29 @@ export const generateRoster = async (params: {
       );
       if (any) {
         offPlan.get(any.id)?.delete(key);
-        const ok = await placeNurseShift({
-          nurse: any,
-          templates: orderedTemplates,
-          preferred: orderedTemplates[0],
-          day,
-          unitId,
-          nightCounts,
-          workDays,
-          relax: true,
-        });
-        if (ok) created += 1;
-        else unstaffedDays += 1;
+        if (placeNurse(any, placeTemplates[0], day)) {
+          placedToday = 1;
+        } else {
+          unstaffedDays += 1;
+        }
       } else {
         unstaffedDays += 1;
       }
     }
   }
 
-  const offCounts = nurses.map((n) => offPlan.get(n.id)?.size ?? 0);
-  const avgOff =
-    offCounts.reduce((a, b) => a + b, 0) / Math.max(1, offCounts.length);
+  // Batch insert — main speed win vs per-row create + compliance queries
+  const CHUNK = 200;
+  for (let i = 0; i < pending.length; i += CHUNK) {
+    await prisma.shiftAssignment.createMany({
+      data: pending.slice(i, i + CHUNK),
+    });
+  }
+
+  const created = pending.length;
+  const rdCounts = nurses.map((n) => offPlan.get(n.id)?.size ?? 0);
+  const minRd = Math.min(...rdCounts);
+  const maxRd = Math.max(...rdCounts);
   const avgWork =
     [...workDays.values()].reduce((a, b) => a + b, 0) /
     Math.max(1, nurses.length);
@@ -283,86 +413,12 @@ export const generateRoster = async (params: {
   return {
     created,
     skipped: blocked,
-    message: `Generated ${created} drafts. Off quota ${offQuota}/nurse; ~${targetOnDuty} on duty/day. Avg off ${avgOff.toFixed(1)}, avg work ${avgWork.toFixed(1)}/${workTarget}.${
+    message: `Generated ${created} drafts. RD quota = ${rdQuota}/nurse (${weekendCount} weekends + ${holidayOnlyCount} holidays). ~${targetOnDuty} on duty/day. RD range ${minRd}–${maxRd}, avg work ${avgWork.toFixed(1)}/${workTarget}.${
       unstaffedDays > 0
         ? ` ${unstaffedDays} day(s) unstaffed.`
         : " All days covered."
     }`,
   };
-};
-
-const placeNurseShift = async (params: {
-  nurse: NurseWithUser;
-  templates: ShiftTemplate[];
-  preferred: ShiftTemplate;
-  day: Date;
-  unitId: string;
-  nightCounts: Map<string, number>;
-  workDays: Map<string, number>;
-  relax?: boolean;
-}) => {
-  const {
-    nurse,
-    templates,
-    preferred,
-    day,
-    unitId,
-    nightCounts,
-    workDays,
-    relax = false,
-  } = params;
-
-  const tryOne = async (template: ShiftTemplate) => {
-    let startAt = combineDateAndTime(day, template.startTime);
-    let endAt = combineDateAndTime(day, template.endTime);
-    if (template.isNight) {
-      endAt = combineDateAndTime(addDays(day, 1), template.endTime);
-    }
-
-    const issues = await evaluateAssignment({ nurse, startAt, endAt });
-    if (hasBlockingIssues(issues)) {
-      if (!relax) {
-        await persistAlerts(issues);
-        return false;
-      }
-      const hard = issues.filter(
-        (i) =>
-          i.type === "OVERLAP" ||
-          i.type === "ON_LEAVE" ||
-          i.type === "LICENSE_EXPIRED",
-      );
-      if (hard.length > 0) {
-        await persistAlerts(issues);
-        return false;
-      }
-    } else if (issues.length > 0) {
-      await persistAlerts(issues);
-    }
-
-    await prisma.shiftAssignment.create({
-      data: {
-        nurseId: nurse.id,
-        unitId,
-        templateId: template.id,
-        startAt,
-        endAt,
-        status: ShiftStatus.DRAFT,
-      },
-    });
-
-    workDays.set(nurse.id, (workDays.get(nurse.id) ?? 0) + 1);
-    if (template.isNight) {
-      nightCounts.set(nurse.id, (nightCounts.get(nurse.id) ?? 0) + 1);
-    }
-    return true;
-  };
-
-  if (await tryOne(preferred)) return true;
-  for (const alt of templates) {
-    if (alt.id === preferred.id) continue;
-    if (await tryOne(alt)) return true;
-  }
-  return false;
 };
 
 const orderTemplates = (templates: ShiftTemplate[]) => {
@@ -377,7 +433,6 @@ const orderTemplates = (templates: ShiftTemplate[]) => {
   );
 };
 
-/** Spread Day / Evening / Night as evenly as possible among working nurses. */
 const balanceShiftTypes = (
   working: NurseWithUser[],
   templates: ShiftTemplate[],
@@ -418,29 +473,27 @@ const balanceShiftTypes = (
   return result;
 };
 
-/**
- * Assign each nurse `offQuota` OFF days, keeping ~targetOnDuty working each day.
- * Offs are spread across the whole period (not piled onto weekends only).
- */
-const buildOffPlan = (params: {
+const buildRestDayPlan = (params: {
   nurses: NurseWithUser[];
   days: Date[];
   leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>;
-  offQuota: number;
+  rdQuota: number;
   minOnDuty: number;
   targetOnDuty: number;
 }) => {
-  const { nurses, days, leaveByNurse, offQuota, minOnDuty, targetOnDuty } =
+  const { nurses, days, leaveByNurse, rdQuota, minOnDuty, targetOnDuty } =
     params;
 
   const offPlan = new Map<string, Set<string>>();
   const offCount = new Map<string, number>();
+  const lastRdIdx = new Map<string, number>();
   for (const n of nurses) {
     offPlan.set(n.id, new Set());
     offCount.set(n.id, 0);
+    lastRdIdx.set(n.id, -999);
   }
 
-  if (offQuota <= 0 || days.length === 0) return offPlan;
+  if (rdQuota <= 0 || days.length === 0) return offPlan;
 
   const available = (day: Date) =>
     nurses.filter(
@@ -449,8 +502,11 @@ const buildOffPlan = (params: {
         !onLeaveThatDay(n.id, day, leaveByNurse),
     );
 
-  // Pass 1: each day take offs until headcount ≈ targetOnDuty
-  for (const day of days) {
+  const gapSinceLastRd = (nurseId: string, dayIdx: number) =>
+    dayIdx - (lastRdIdx.get(nurseId) ?? -999);
+
+  for (let dayIdx = 0; dayIdx < days.length; dayIdx++) {
+    const day = days[dayIdx];
     const key = dayKey(day);
     const pool = available(day);
     const desiredOn = Math.min(
@@ -461,32 +517,34 @@ const buildOffPlan = (params: {
     if (desiredOff === 0) continue;
 
     const needing = [...pool]
-      .filter((n) => (offCount.get(n.id) ?? 0) < offQuota)
+      .filter((n) => (offCount.get(n.id) ?? 0) < rdQuota)
       .sort((a, b) => {
         const ca = offCount.get(a.id) ?? 0;
         const cb = offCount.get(b.id) ?? 0;
         if (ca !== cb) return ca - cb;
-        // Stagger by rotating name hash with day index for variety
-        const dayBias =
-          (a.id.charCodeAt(0) + days.indexOf(day)) % 7 -
-          ((b.id.charCodeAt(0) + days.indexOf(day)) % 7);
-        return dayBias || a.user.name.localeCompare(b.user.name);
+        const ga = gapSinceLastRd(a.id, dayIdx);
+        const gb = gapSinceLastRd(b.id, dayIdx);
+        if (ga !== gb) return gb - ga;
+        const rot =
+          ((a.id.charCodeAt(0) + dayIdx) % nurses.length) -
+          ((b.id.charCodeAt(0) + dayIdx) % nurses.length);
+        return rot || a.user.name.localeCompare(b.user.name);
       });
 
     for (const nurse of needing.slice(0, desiredOff)) {
       offPlan.get(nurse.id)!.add(key);
       offCount.set(nurse.id, (offCount.get(nurse.id) ?? 0) + 1);
+      lastRdIdx.set(nurse.id, dayIdx);
     }
   }
 
-  // Pass 2: nurses still short of offQuota — add offs on fullest days
   const onDutyEstimate = (day: Date) => {
     const key = dayKey(day);
     return available(day).filter((n) => !offPlan.get(n.id)?.has(key)).length;
   };
 
   for (const nurse of nurses) {
-    while ((offCount.get(nurse.id) ?? 0) < offQuota) {
+    while ((offCount.get(nurse.id) ?? 0) < rdQuota) {
       const candidates = days
         .map((day, idx) => ({ day, idx, key: dayKey(day) }))
         .filter(({ day, key }) => {
@@ -495,16 +553,28 @@ const buildOffPlan = (params: {
           if (onLeaveThatDay(nurse.id, day, leaveByNurse)) return false;
           return onDutyEstimate(day) > minOnDuty;
         })
-        .sort(
-          (a, b) =>
-            onDutyEstimate(b.day) - onDutyEstimate(a.day) || a.idx - b.idx,
-        );
+        .sort((a, b) => {
+          const staff = onDutyEstimate(b.day) - onDutyEstimate(a.day);
+          if (staff !== 0) return staff;
+          const dist = (idx: number) => {
+            const keys = [...(offPlan.get(nurse.id) ?? [])];
+            if (keys.length === 0) return 999;
+            return Math.min(
+              ...keys.map((k) => {
+                const other = days.findIndex((d) => dayKey(d) === k);
+                return other < 0 ? 999 : Math.abs(other - idx);
+              }),
+            );
+          };
+          return dist(b.idx) - dist(a.idx) || a.idx - b.idx;
+        });
 
       if (candidates.length === 0) break;
 
       const pick = candidates[0];
       offPlan.get(nurse.id)!.add(pick.key);
       offCount.set(nurse.id, (offCount.get(nurse.id) ?? 0) + 1);
+      lastRdIdx.set(nurse.id, pick.idx);
     }
   }
 

@@ -20,7 +20,7 @@ export const AppShell = ({
 }) => (
   <div className="min-h-screen">
     <header className="border-b border-slate-200/80 bg-white/80 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-3">
+      <div className="mx-auto flex w-full max-w-[1920px] flex-wrap items-center justify-between gap-4 px-4 py-3 lg:px-6">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wider text-teal-700">
             Hospital Sched
@@ -41,7 +41,7 @@ export const AppShell = ({
         </div>
       </div>
       <nav
-        className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-4 pb-3"
+        className="mx-auto flex w-full max-w-[1920px] gap-1 overflow-x-auto px-4 pb-3 lg:px-6"
         aria-label="Primary"
       >
         {nav.map((item) => (
@@ -58,6 +58,6 @@ export const AppShell = ({
         ))}
       </nav>
     </header>
-    <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
+    <main className="mx-auto w-full max-w-[1920px] px-4 py-6 lg:px-6">{children}</main>
   </div>
 );

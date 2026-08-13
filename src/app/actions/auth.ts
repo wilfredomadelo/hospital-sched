@@ -1,7 +1,8 @@
 "use server";
 
 import { AuthError } from "next-auth";
-import { signIn, signOut } from "@/lib/auth";
+import { signIn, signOut, getSession } from "@/lib/auth";
+import { clearAuthCookiesAction } from "@/app/actions/clear-auth";
 import { homeForRole } from "@/lib/session";
 import type { Role } from "@prisma/client";
 import { redirect } from "next/navigation";
@@ -12,6 +13,9 @@ export const loginAction = async (
 ) => {
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
+
+  // Drop cookies encrypted with an old AUTH_SECRET before issuing a new session
+  await clearAuthCookiesAction();
 
   try {
     await signIn("credentials", {
@@ -26,8 +30,7 @@ export const loginAction = async (
     throw error;
   }
 
-  const { auth } = await import("@/lib/auth");
-  const session = await auth();
+  const session = await getSession();
   const role = (session?.user?.role ?? "NURSE") as Role;
   redirect(homeForRole(role));
 };

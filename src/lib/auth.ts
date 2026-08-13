@@ -31,7 +31,34 @@ const credentialsSchema = z.object({
   password: z.string().min(1),
 });
 
+const authSecret = process.env.AUTH_SECRET;
+if (!authSecret) {
+  console.warn(
+    "[auth] AUTH_SECRET is missing. Set it in .env / Vercel env vars.",
+  );
+}
+
+const isJwtSessionNoise = (error: Error) => {
+  const name = error.name ?? "";
+  const message = error.message ?? "";
+  const type = (error as Error & { type?: string }).type ?? "";
+  return (
+    name === "JWTSessionError" ||
+    type === "JWTSessionError" ||
+    message.includes("no matching decryption secret") ||
+    message.includes("JWTSessionError")
+  );
+};
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  secret: authSecret,
+  logger: {
+    error(error) {
+      // Stale cookie after AUTH_SECRET change — expected, not an app bug
+      if (isJwtSessionNoise(error)) return;
+      console.error("[auth][error]", error);
+    },
+  },
   providers: [
     Credentials({
       name: "Credentials",
@@ -77,11 +104,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
     session: async ({ session, token }) => {
       if (session.user) {
-        session.user.id = token.id;
-        session.user.role = token.role;
+        session.user.id = token.id as string;
+        session.user.role = token.role as Role;
       }
       return session;
     },
   },
   trustHost: true,
 });
+
+/** Safe session read — never throws on bad JWT */
+export const getSession = async () => {
+  try {
+    return (await auth()) ?? null;
+  } catch (error) {
+    if (error instanceof Error && isJwtSessionNoise(error)) return null;
+    return null;
+  }
+};
