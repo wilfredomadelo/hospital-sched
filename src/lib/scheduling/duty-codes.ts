@@ -47,9 +47,9 @@ export const DUTY_CODES: DutyCodeDef[] = [
 
 /** Non-duty status / leave codes for the legend. */
 export const STATUS_CODES: StatusCodeDef[] = [
-  { code: "L", description: "Lacking Off", kind: "status" },
+  { code: "L", description: "Lacking Rest Day", kind: "status" },
   { code: "C", description: "Compensatory", kind: "status" },
-  { code: "RD", description: "Rest Day", kind: "status" },
+  { code: "RD", description: "Rest Day (RD)", kind: "status" },
   { code: "LV", description: "Leave", kind: "leave" },
   { code: "QL", description: "Quarantine Leave", kind: "leave" },
   { code: "RL", description: "Rehabilitation Leave", kind: "leave" },
@@ -61,7 +61,15 @@ export const STATUS_CODES: StatusCodeDef[] = [
   { code: "VL", description: "Vacation Leave", kind: "leave" },
 ];
 
-export const LEAVE_TYPE_OPTIONS = STATUS_CODES.filter((c) => c.kind === "leave");
+export const parseDutyCodes = (raw: string) => {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [] as string[];
+    return parsed.filter((c): c is string => typeof c === "string");
+  } catch {
+    return [] as string[];
+  }
+};
 
 export const dutyByCode = Object.fromEntries(
   DUTY_CODES.map((d) => [d.code, d]),
@@ -72,20 +80,20 @@ export const statusByCode = Object.fromEntries(
 ) as Record<string, StatusCodeDef>;
 
 const PALETTE = [
-  { bg: "bg-emerald-100", text: "text-emerald-900", border: "border-emerald-300" },
-  { bg: "bg-teal-100", text: "text-teal-900", border: "border-teal-300" },
-  { bg: "bg-cyan-100", text: "text-cyan-900", border: "border-cyan-300" },
-  { bg: "bg-sky-100", text: "text-sky-900", border: "border-sky-300" },
-  { bg: "bg-blue-100", text: "text-blue-900", border: "border-blue-300" },
-  { bg: "bg-indigo-100", text: "text-indigo-900", border: "border-indigo-300" },
-  { bg: "bg-violet-100", text: "text-violet-900", border: "border-violet-300" },
-  { bg: "bg-fuchsia-100", text: "text-fuchsia-900", border: "border-fuchsia-300" },
-  { bg: "bg-pink-100", text: "text-pink-900", border: "border-pink-300" },
-  { bg: "bg-rose-100", text: "text-rose-900", border: "border-rose-300" },
-  { bg: "bg-orange-100", text: "text-orange-900", border: "border-orange-300" },
-  { bg: "bg-amber-100", text: "text-amber-900", border: "border-amber-300" },
-  { bg: "bg-lime-100", text: "text-lime-900", border: "border-lime-300" },
-  { bg: "bg-green-100", text: "text-green-900", border: "border-green-300" },
+  { bg: "bg-emerald-100 dark:bg-emerald-900/80", text: "text-emerald-900 dark:text-emerald-100", border: "border-emerald-300 dark:border-emerald-700" },
+  { bg: "bg-teal-100 dark:bg-teal-900/80", text: "text-teal-900 dark:text-teal-100", border: "border-teal-300 dark:border-teal-700" },
+  { bg: "bg-cyan-100 dark:bg-cyan-900/80", text: "text-cyan-900 dark:text-cyan-100", border: "border-cyan-300 dark:border-cyan-700" },
+  { bg: "bg-sky-100 dark:bg-sky-900/80", text: "text-sky-900 dark:text-sky-100", border: "border-sky-300 dark:border-sky-700" },
+  { bg: "bg-blue-100 dark:bg-blue-900/80", text: "text-blue-900 dark:text-blue-100", border: "border-blue-300 dark:border-blue-700" },
+  { bg: "bg-indigo-100 dark:bg-indigo-900/80", text: "text-indigo-900 dark:text-indigo-100", border: "border-indigo-300 dark:border-indigo-700" },
+  { bg: "bg-violet-100 dark:bg-violet-900/80", text: "text-violet-900 dark:text-violet-100", border: "border-violet-300 dark:border-violet-700" },
+  { bg: "bg-fuchsia-100 dark:bg-fuchsia-900/80", text: "text-fuchsia-900 dark:text-fuchsia-100", border: "border-fuchsia-300 dark:border-fuchsia-700" },
+  { bg: "bg-pink-100 dark:bg-pink-900/80", text: "text-pink-900 dark:text-pink-100", border: "border-pink-300 dark:border-pink-700" },
+  { bg: "bg-rose-100 dark:bg-rose-900/80", text: "text-rose-900 dark:text-rose-100", border: "border-rose-300 dark:border-rose-700" },
+  { bg: "bg-orange-100 dark:bg-orange-900/80", text: "text-orange-900 dark:text-orange-100", border: "border-orange-300 dark:border-orange-700" },
+  { bg: "bg-amber-100 dark:bg-amber-900/80", text: "text-amber-900 dark:text-amber-100", border: "border-amber-300 dark:border-amber-700" },
+  { bg: "bg-lime-100 dark:bg-lime-900/80", text: "text-lime-900 dark:text-lime-100", border: "border-lime-300 dark:border-lime-700" },
+  { bg: "bg-green-100 dark:bg-green-900/80", text: "text-green-900 dark:text-green-100", border: "border-green-300 dark:border-green-700" },
 ];
 
 const hashCode = (code: string) => {
@@ -96,13 +104,21 @@ const hashCode = (code: string) => {
 
 export const styleForCode = (code: string) => {
   if (code === "RD") {
-    return { bg: "bg-amber-50", text: "text-amber-800", border: "border-amber-200" };
+    return {
+      bg: "bg-amber-50 dark:bg-amber-900/70",
+      text: "text-amber-800 dark:text-amber-100",
+      border: "border-amber-200 dark:border-amber-700",
+    };
   }
   if (code === "L" || code === "C") {
     return { bg: "bg-slate-100", text: "text-slate-700", border: "border-slate-300" };
   }
   if (STATUS_CODES.some((s) => s.kind === "leave" && s.code === code)) {
-    return { bg: "bg-rose-100", text: "text-rose-900", border: "border-rose-300" };
+    return {
+      bg: "bg-rose-100 dark:bg-rose-900/70",
+      text: "text-rose-900 dark:text-rose-100",
+      border: "border-rose-300 dark:border-rose-700",
+    };
   }
   if (code === "HOL") {
     return { bg: "bg-slate-100", text: "text-slate-600", border: "border-slate-300" };

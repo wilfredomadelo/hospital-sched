@@ -9,6 +9,9 @@ import type { RosterViewMode } from "@/lib/scheduling/period";
 const toMonday = (isoDate: string) =>
   format(startOfWeek(parseISO(isoDate), { weekStartsOn: 1 }), "yyyy-MM-dd");
 
+const selectClass =
+  "h-8 w-auto min-w-[6.5rem] border-slate-300 bg-white px-2 text-xs";
+
 export const RosterControls = ({
   units,
   unitId,
@@ -33,35 +36,37 @@ export const RosterControls = ({
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3">
-      <div className="space-y-1">
-        <Label htmlFor="roster-unit">Department / Unit</Label>
-        <Select
-          id="roster-unit"
-          value={unitId}
-          onChange={(e) => push({ unitId: e.target.value })}
-          aria-label="Select unit"
-        >
-          {units.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.name}
-            </option>
-          ))}
-        </Select>
-      </div>
-      <div className="space-y-1">
-        <Label htmlFor="roster-view">Schedule view</Label>
-        <Select
-          id="roster-view"
-          value={view}
-          onChange={(e) => push({ view: e.target.value, start })}
-          aria-label="Select schedule view"
-        >
-          <option value="week">Weekly (7 days)</option>
-          <option value="15day">15-Day</option>
-          <option value="month">Monthly</option>
-        </Select>
-      </div>
+    <div className="flex items-center gap-1.5">
+      <Label htmlFor="roster-unit" className="sr-only">
+        Unit
+      </Label>
+      <Select
+        id="roster-unit"
+        value={unitId}
+        onChange={(e) => push({ unitId: e.target.value })}
+        aria-label="Select unit"
+        className={selectClass}
+      >
+        {units.map((u) => (
+          <option key={u.id} value={u.id}>
+            {u.name}
+          </option>
+        ))}
+      </Select>
+      <Label htmlFor="roster-view" className="sr-only">
+        Schedule view
+      </Label>
+      <Select
+        id="roster-view"
+        value={view}
+        onChange={(e) => push({ view: e.target.value, start })}
+        aria-label="Select schedule view"
+        className={selectClass}
+      >
+        <option value="week">Weekly</option>
+        <option value="15day">15-Day</option>
+        <option value="month">Monthly</option>
+      </Select>
     </div>
   );
 };

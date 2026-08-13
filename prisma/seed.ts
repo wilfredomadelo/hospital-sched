@@ -70,6 +70,7 @@ async function main() {
   await prisma.publicHoliday.deleteMany();
   await prisma.nurseProfile.deleteMany();
   await prisma.shiftTemplate.deleteMany();
+  await prisma.$executeRaw`DELETE FROM ScheduleType`;
   await prisma.unit.deleteMany();
   await prisma.user.deleteMany();
 
@@ -113,6 +114,18 @@ async function main() {
     });
     dutyTemplates.push(t);
   }
+
+  const now = new Date().toISOString();
+  await prisma.$executeRaw`
+    INSERT INTO ScheduleType (id, name, dutyCodes, createdAt, updatedAt)
+    VALUES (
+      ${"cstdstd00000000000000001"},
+      ${"Standard"},
+      ${'["7","3","11","6","8","2","10","12"]'},
+      ${now},
+      ${now}
+    )
+  `;
 
   for (const status of [
     { code: "L", start: "00:00", end: "23:59" },

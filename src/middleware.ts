@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 /**
- * Lightweight Edge middleware — do NOT import next-auth / prisma / bcrypt here
- * or the bundle exceeds Vercel Hobby's 1 MB Edge limit.
- * Real role checks happen in admin/nurse layouts via requireRole().
+ * Lightweight Edge middleware — do NOT import next-auth / prisma / bcrypt here.
+ * Role checks happen in layouts via requireRole().
  */
 const SESSION_COOKIES = [
   "authjs.session-token",
@@ -16,19 +15,14 @@ const hasSession = (req: NextRequest) =>
 
 export const middleware = (req: NextRequest) => {
   const { pathname } = req.nextUrl;
-  const loggedIn = hasSession(req);
 
+  // Always allow login — stale JWTs must not trap users away from sign-in
   if (pathname.startsWith("/login")) {
-    if (loggedIn) {
-      const url = req.nextUrl.clone();
-      url.pathname = "/";
-      return NextResponse.redirect(url);
-    }
     return NextResponse.next();
   }
 
   if (pathname.startsWith("/admin") || pathname.startsWith("/nurse")) {
-    if (!loggedIn) {
+    if (!hasSession(req)) {
       const url = req.nextUrl.clone();
       url.pathname = "/login";
       url.searchParams.set("callbackUrl", pathname);

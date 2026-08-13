@@ -106,12 +106,12 @@ export const AssignShiftForm = ({
           </div>
         </form>
         {error ? (
-          <p className="mt-3 text-sm text-rose-600" role="alert">
+          <p className="mt-3 text-sm text-rose-600 dark:text-rose-400" role="alert">
             {error}
           </p>
         ) : null}
         {message ? (
-          <p className="mt-3 text-sm text-teal-700" role="status">
+          <p className="mt-3 text-sm text-teal-700 dark:text-teal-400" role="status">
             {message}
           </p>
         ) : null}

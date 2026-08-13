@@ -11,8 +11,9 @@ import {
   hasBlockingIssues,
   persistAlerts,
 } from "@/lib/scheduling/compliance";
-import { createNotification } from "@/lib/notifications";
+import { createNotifications } from "@/lib/notifications";
 import { generateRoster } from "@/lib/scheduling/generator";
+import { findScheduleTypeById } from "@/lib/schedule-types-db";
 
 const combineDateAndTime = (date: Date, time: string) => {
   const [h, m] = time.split(":").map(Number);
@@ -191,12 +192,58 @@ export const cancelAssignment = async (formData: FormData): Promise<void> => {
   revalidatePath("/nurse");
 };
 
-export const publishPeriod = async (formData: FormData): Promise<void> => {
+export const deleteCancelledShifts = async (
+  formData: FormData,
+): Promise<AssignResult> => {
+  await requireRole([Role.ADMIN, Role.SUPERVISOR]);
+  const unitId = String(formData.get("unitId") ?? "");
+  if (!unitId) return { error: "Missing unit." };
+
+  const existing = await prisma.shiftAssignment.count({
+    where: { unitId, status: ShiftStatus.CANCELLED },
+  });
+  if (existing === 0) {
+    return {
+      success: true,
+      warnings: ["No cancelled shifts found for this unit."],
+    };
+  }
+
+  const result = await prisma.shiftAssignment.deleteMany({
+    where: { unitId, status: ShiftStatus.CANCELLED },
+  });
+
+  const leftover = await prisma.shiftAssignment.count({
+    where: { unitId, status: ShiftStatus.CANCELLED },
+  });
+  if (leftover > 0) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM "ShiftAssignment" WHERE status = 'CANCELLED' AND unitId = ?`,
+      unitId,
+    );
+  }
+
+  const remaining = await prisma.shiftAssignment.count({
+    where: { unitId, status: ShiftStatus.CANCELLED },
+  });
+  const deleted = existing - remaining;
+
+  revalidatePath("/admin/roster");
+  revalidatePath("/nurse");
+  return {
+    success: true,
+    warnings: [`Permanently deleted ${deleted || result.count} cancelled shifts.`],
+  };
+};
+
+export const publishPeriod = async (formData: FormData): Promise<AssignResult> => {
   await requireRole([Role.ADMIN, Role.SUPERVISOR]);
   const unitId = String(formData.get("unitId") ?? "");
   const startStr = String(formData.get("periodStart") ?? "");
   const endStr = String(formData.get("periodEnd") ?? "");
-  if (!unitId || !startStr || !endStr) return;
+  if (!unitId || !startStr || !endStr) {
+    return { error: "Missing unit or period." };
+  }
 
   const periodStart = parseISO(startStr);
   const periodEnd = parseISO(endStr);
@@ -207,8 +254,15 @@ export const publishPeriod = async (formData: FormData): Promise<void> => {
       status: ShiftStatus.DRAFT,
       startAt: { gte: periodStart, lt: periodEnd },
     },
-    include: { nurse: { include: { user: true } }, template: true },
+    select: { nurse: { select: { userId: true } } },
   });
+
+  if (drafts.length === 0) {
+    return { success: true, warnings: ["No drafts to publish."] };
+  }
+
+  const userIds = [...new Set(drafts.map((d) => d.nurse.userId))];
+  const rangeLabel = `${format(periodStart, "MMM d")}–${format(addDays(periodEnd, -1), "MMM d, yyyy")}`;
 
   await prisma.shiftAssignment.updateMany({
     where: {
@@ -219,17 +273,21 @@ export const publishPeriod = async (formData: FormData): Promise<void> => {
     data: { status: ShiftStatus.PUBLISHED },
   });
 
-  for (const draft of drafts) {
-    await createNotification({
-      userId: draft.nurse.userId,
+  await createNotifications(
+    userIds.map((userId) => ({
+      userId,
       title: "Schedule published",
-      body: `Your ${draft.template.name} shift on ${format(draft.startAt, "EEE MMM d")} is now published.`,
-    });
-  }
+      body: `Your roster for ${rangeLabel} is now published.`,
+    })),
+  );
 
   revalidatePath("/admin/roster");
   revalidatePath("/nurse");
   revalidatePath("/nurse/notifications");
+  return {
+    success: true,
+    warnings: [`Published ${drafts.length} shifts to ${userIds.length} nurses.`],
+  };
 };
 
 /** @deprecated use publishPeriod */
@@ -240,8 +298,44 @@ export const runAutoRoster = async (formData: FormData): Promise<AssignResult> =
   const unitId = String(formData.get("unitId") ?? "");
   const startStr = String(formData.get("periodStart") ?? "");
   const endStr = String(formData.get("periodEnd") ?? "");
+  const scheduleTypeId = String(formData.get("scheduleTypeId") ?? "");
   if (!unitId || !startStr || !endStr) {
     return { error: "Missing unit or period." };
+  }
+  if (!scheduleTypeId) {
+    return { error: "Select a schedule type before generating." };
+  }
+
+  let nurseIds: string[] = [];
+  try {
+    const raw = String(formData.get("nurseIds") ?? "[]");
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      nurseIds = parsed.filter((id): id is string => typeof id === "string");
+    }
+  } catch {
+    return { error: "Invalid staff selection." };
+  }
+  if (nurseIds.length === 0) {
+    return { error: "Select at least one staff member." };
+  }
+
+  const scheduleType = await findScheduleTypeById(scheduleTypeId);
+  if (!scheduleType) {
+    return { error: "Schedule type not found." };
+  }
+
+  let dutyCodes: string[] = [];
+  try {
+    const parsed = JSON.parse(scheduleType.dutyCodes) as unknown;
+    if (Array.isArray(parsed)) {
+      dutyCodes = parsed.filter((c): c is string => typeof c === "string");
+    }
+  } catch {
+    dutyCodes = [];
+  }
+  if (dutyCodes.length === 0) {
+    return { error: "That schedule type has no legend codes." };
   }
 
   const result = await generateRoster({
@@ -249,6 +343,8 @@ export const runAutoRoster = async (formData: FormData): Promise<AssignResult> =
     periodStart: parseISO(startStr),
     periodEnd: parseISO(endStr),
     replaceDrafts: true,
+    nurseIds,
+    dutyCodes,
   });
 
   revalidatePath("/admin/roster");

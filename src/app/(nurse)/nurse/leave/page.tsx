@@ -16,7 +16,7 @@ export default async function NurseLeavePage() {
     where: { userId: session.user.id },
   });
   if (!profile) {
-    return <p className="text-sm text-rose-600">Nurse profile not found.</p>;
+    return <p className="text-sm text-rose-600 dark:text-rose-400">Nurse profile not found.</p>;
   }
 
   const leaves = await prisma.leaveRequest.findMany({
@@ -25,8 +25,8 @@ export default async function NurseLeavePage() {
   });
 
   const statusClass = (status: string) => {
-    if (status === "PENDING") return "bg-amber-50 text-amber-800";
-    if (status === "APPROVED") return "bg-teal-50 text-teal-800";
+    if (status === "PENDING") return "bg-amber-50 text-amber-800 dark:bg-amber-900/70 dark:text-amber-200";
+    if (status === "APPROVED") return "bg-teal-50 text-teal-800 dark:bg-teal-900/70 dark:text-teal-200";
     return "bg-slate-100 text-slate-600";
   };
 

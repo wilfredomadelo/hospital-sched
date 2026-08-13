@@ -1,27 +1,35 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
+import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import {
   assignShift,
-  bulkAssignShifts,
   bulkClearAssignments,
   copyPreviousPeriod,
+  deleteCancelledShifts,
+  publishPeriod,
   runAutoRoster,
   type AssignResult,
 } from "@/app/actions/shifts";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { RosterControls } from "@/components/roster-controls";
 import { RosterLegend } from "@/components/roster-legend";
 import {
-  DUTY_CODES,
+  ScheduleTypesManager,
+  type ScheduleTypeItem,
+} from "@/components/schedule-types-manager";
+import {
   formatDutyLabel,
   statusByCode,
   styleForCode,
 } from "@/lib/scheduling/duty-codes";
+import type { RosterViewMode } from "@/lib/scheduling/period";
 import { cn } from "@/lib/utils";
 
 export type RosterNurse = {
@@ -55,6 +63,9 @@ type Props = {
   unitId: string;
   periodStart: string;
   periodEnd: string;
+  periodLabel: string;
+  prevHref: string;
+  nextHref: string;
   days: string[];
   nurses: RosterNurse[];
   assignments: RosterAssignment[];
@@ -62,13 +73,18 @@ type Props = {
   holidayKeys: string[];
   holidayNames: Record<string, string>;
   templates: RosterTemplate[];
-  view: string;
+  view: RosterViewMode;
+  units: { id: string; name: string }[];
+  scheduleTypes: ScheduleTypeItem[];
 };
 
 export const RosterGrid = ({
   unitId,
   periodStart,
   periodEnd,
+  periodLabel,
+  prevHref,
+  nextHref,
   days,
   nurses,
   assignments,
@@ -77,21 +93,26 @@ export const RosterGrid = ({
   holidayNames,
   templates,
   view,
+  units,
+  scheduleTypes,
 }: Props) => {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [selectedNurses, setSelectedNurses] = useState<Set<string>>(new Set());
   const [nameFilter, setNameFilter] = useState("");
-  const [shiftFilter, setShiftFilter] = useState("all");
-  const [bulkTemplateId, setBulkTemplateId] = useState(templates[0]?.id ?? "");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeCell, setActiveCell] = useState<{
     nurseId: string;
     dateKey: string;
   } | null>(null);
-  const [fillMode, setFillMode] = useState(false);
-  const [fillTemplateId, setFillTemplateId] = useState(templates[0]?.id ?? "");
+  const [selectedNurses, setSelectedNurses] = useState<Set<string>>(new Set());
+  const [scheduleTypeId, setScheduleTypeId] = useState(
+    scheduleTypes[0]?.id ?? "",
+  );
+  const [typesOpen, setTypesOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<
+    "clear" | "deleteCancelled" | null
+  >(null);
 
   const holidaySet = useMemo(() => new Set(holidayKeys), [holidayKeys]);
 
@@ -104,26 +125,55 @@ export const RosterGrid = ({
   }, [assignments]);
 
   const filteredNurses = useMemo(() => {
-    return nurses.filter((n) => {
-      if (
-        nameFilter &&
-        !n.name.toLowerCase().includes(nameFilter.toLowerCase()) &&
-        !n.employeeId.toLowerCase().includes(nameFilter.toLowerCase())
-      ) {
-        return false;
-      }
-      if (shiftFilter === "all") return true;
-      return days.some((d) => {
-        const leave = leaveCodes[`${n.id}|${d}`];
-        if (shiftFilter === "RD") {
-          return !leave && !assignmentMap.get(`${n.id}|${d}`);
-        }
-        if (leave) return leave === shiftFilter;
-        const a = assignmentMap.get(`${n.id}|${d}`);
-        return a?.templateName === shiftFilter;
-      });
+    if (!nameFilter) return nurses;
+    const q = nameFilter.toLowerCase();
+    return nurses.filter(
+      (n) =>
+        n.name.toLowerCase().includes(q) ||
+        n.employeeId.toLowerCase().includes(q),
+    );
+  }, [nurses, nameFilter]);
+
+  const draftCount = useMemo(
+    () => assignments.filter((a) => a.status === "DRAFT").length,
+    [assignments],
+  );
+  const publishedCount = assignments.length - draftCount;
+
+  const allFilteredSelected =
+    filteredNurses.length > 0 &&
+    filteredNurses.every((n) => selectedNurses.has(n.id));
+
+  useEffect(() => {
+    if (
+      scheduleTypeId &&
+      scheduleTypes.some((t) => t.id === scheduleTypeId)
+    ) {
+      return;
+    }
+    setScheduleTypeId(scheduleTypes[0]?.id ?? "");
+  }, [scheduleTypes, scheduleTypeId]);
+
+  const handleToggleNurse = (id: string) => {
+    setSelectedNurses((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
-  }, [nurses, nameFilter, shiftFilter, days, assignmentMap, leaveCodes]);
+  };
+
+  const handleToggleAllStaff = () => {
+    setSelectedNurses((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        for (const n of filteredNurses) next.delete(n.id);
+      } else {
+        for (const n of filteredNurses) next.add(n.id);
+      }
+      return next;
+    });
+  };
 
   const applyResult = (result: AssignResult) => {
     if (result.error) {
@@ -142,21 +192,6 @@ export const RosterGrid = ({
 
   const handleCellClick = (nurseId: string, dateKey: string) => {
     if (leaveCodes[`${nurseId}|${dateKey}`]) return;
-
-    if (fillMode && fillTemplateId) {
-      startTransition(async () => {
-        const fd = new FormData();
-        fd.set("nurseId", nurseId);
-        fd.set("unitId", unitId);
-        fd.set("templateId", fillTemplateId);
-        fd.set("date", dateKey);
-        const existing = assignmentMap.get(`${nurseId}|${dateKey}`);
-        if (existing) fd.set("replaceAssignmentId", existing.id);
-        applyResult(await assignShift(fd));
-      });
-      return;
-    }
-
     setActiveCell({ nurseId, dateKey });
   };
 
@@ -188,54 +223,59 @@ export const RosterGrid = ({
     }
     startTransition(async () => {
       await bulkClearAssignments({ assignmentIds: [existing.id] });
-      setMessage("Cleared — cell is RD (Rest Day).");
+      setMessage("Cleared — cell is Rest Day (RD).");
       setActiveCell(null);
       router.refresh();
     });
   };
 
-  const toggleNurse = (id: string) => {
-    setSelectedNurses((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const selectAllVisible = () => {
-    setSelectedNurses(new Set(filteredNurses.map((n) => n.id)));
-  };
-
-  const handleBulkAssign = () => {
-    if (selectedNurses.size === 0 || !bulkTemplateId) {
-      setError("Select nurses and a duty code.");
+  const handleClearAll = () => {
+    if (assignments.length === 0) {
+      setError("No assignments to clear.");
       return;
     }
-    startTransition(async () => {
-      applyResult(
-        await bulkAssignShifts({
-          nurseIds: [...selectedNurses],
-          unitId,
-          templateId: bulkTemplateId,
-          dates: days,
-        }),
-      );
-    });
+    setConfirmAction("clear");
   };
 
-  const handleBulkClear = () => {
-    const ids = assignments
-      .filter((a) => selectedNurses.has(a.nurseId))
-      .map((a) => a.id);
+  const handleDeleteCancelled = () => {
+    setConfirmAction("deleteCancelled");
+  };
+
+  const handleClearAssignments = (scope: "all" | "selected") => {
+    const ids =
+      scope === "selected"
+        ? assignments
+            .filter((a) => selectedNurses.has(a.nurseId))
+            .map((a) => a.id)
+        : assignments.map((a) => a.id);
     if (ids.length === 0) {
-      setError("No assignments for selected nurses.");
+      setError(
+        scope === "selected"
+          ? "No selected staff have shifts to clear."
+          : "No assignments to clear.",
+      );
+      setConfirmAction(null);
       return;
     }
     startTransition(async () => {
       await bulkClearAssignments({ assignmentIds: ids });
-      setMessage(`Cleared ${ids.length} assignments.`);
+      setConfirmAction(null);
+      setError(null);
+      setMessage(
+        scope === "selected"
+          ? `Cleared ${ids.length} assignments for selected staff.`
+          : `Cleared ${ids.length} assignments.`,
+      );
       router.refresh();
+    });
+  };
+
+  const handleConfirmDeleteCancelled = () => {
+    startTransition(async () => {
+      const fd = new FormData();
+      fd.set("unitId", unitId);
+      applyResult(await deleteCancelledShifts(fd));
+      setConfirmAction(null);
     });
   };
 
@@ -267,11 +307,11 @@ export const RosterGrid = ({
     if (holidaySet.has(d)) {
       return {
         code: "RD",
-        title: `${holidayNames[d] || "Public holiday"} · Rest Day`,
+        title: `${holidayNames[d] || "Public holiday"} · Rest Day (RD)`,
         locked: false,
       };
     }
-    return { code: "RD", title: "Rest Day", locked: false };
+    return { code: "RD", title: "Rest Day (RD)", locked: false };
   };
 
   const exportCsv = () => {
@@ -295,166 +335,235 @@ export const RosterGrid = ({
   const templateLabel = (t: RosterTemplate) => formatDutyLabel(t.name);
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-slate-500">
-          Codes: duty (7, 7A, 3…) · RD rest · leave (VL, SL…)
-        </p>
-        <RosterLegend />
-      </div>
-
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
-        <div className="space-y-1">
-          <Label htmlFor="name-filter">Search nurse / ID</Label>
-          <Input
-            id="name-filter"
-            value={nameFilter}
-            onChange={(e) => setNameFilter(e.target.value)}
-            placeholder="Name or license #"
-            aria-label="Filter by nurse name or employee ID"
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="shift-filter">Code filter</Label>
-          <Select
-            id="shift-filter"
-            value={shiftFilter}
-            onChange={(e) => setShiftFilter(e.target.value)}
-            aria-label="Filter by duty code"
-          >
-            <option value="all">All</option>
-            <option value="RD">RD</option>
-            {DUTY_CODES.map((d) => (
-              <option key={d.code} value={d.code}>
-                {d.code}
-              </option>
-            ))}
-            <option value="VL">VL</option>
-            <option value="SL">SL</option>
-            <option value="PL">PL</option>
-            <option value="LV">LV</option>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="bulk-shift">Bulk code</Label>
-          <Select
-            id="bulk-shift"
-            value={bulkTemplateId}
-            onChange={(e) => setBulkTemplateId(e.target.value)}
-            aria-label="Bulk duty code"
-          >
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={selectAllVisible}
-          disabled={pending}
-        >
-          Select all
-        </Button>
-        <Button type="button" onClick={handleBulkAssign} disabled={pending}>
-          Apply to selected
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={handleBulkClear}
-          disabled={pending}
-        >
-          Clear selected
-        </Button>
-        <Button
-          type="button"
-          variant={fillMode ? "default" : "outline"}
-          onClick={() => setFillMode((v) => !v)}
-          aria-pressed={fillMode}
-        >
-          {fillMode ? "Fill mode on" : "Fill mode"}
-        </Button>
-        {fillMode ? (
-          <Select
-            value={fillTemplateId}
-            onChange={(e) => setFillTemplateId(e.target.value)}
-            aria-label="Fill duty code"
-          >
-            {templates.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </Select>
-        ) : null}
-        <Button type="button" variant="outline" onClick={exportCsv}>
-          Export CSV
-        </Button>
-        <Button
-          type="button"
-          disabled={pending}
-          onClick={() => {
-            startTransition(async () => {
-              const fd = new FormData();
-              fd.set("unitId", unitId);
-              fd.set("periodStart", periodStart);
-              fd.set("periodEnd", periodEnd);
-              applyResult(await runAutoRoster(fd));
-            });
-          }}
-        >
-          Auto-generate
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={pending}
-          onClick={() => {
-            startTransition(async () => {
-              const fd = new FormData();
-              fd.set("unitId", unitId);
-              fd.set("periodStart", periodStart);
-              fd.set("periodEnd", periodEnd);
-              applyResult(await copyPreviousPeriod(fd));
-            });
-          }}
-        >
-          Copy previous period
-        </Button>
-      </div>
-
+    <div className="space-y-2">
       {error ? (
-        <p className="text-sm text-rose-600" role="alert">
+        <p className="text-sm text-rose-600 dark:text-rose-400" role="alert">
           {error}
         </p>
       ) : null}
       {message ? (
-        <p className="text-sm text-teal-700" role="status">
+        <p className="text-sm text-teal-700 dark:text-teal-400" role="status">
           {message}
         </p>
       ) : null}
 
-      <div className="overflow-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table className="min-w-full border-collapse text-sm">
+      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 px-2 py-1.5">
+          <div className="inline-flex h-8 items-center overflow-hidden rounded-md border border-slate-300">
+            <Link
+              href={prevHref}
+              className="inline-flex h-8 w-8 items-center justify-center text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+              tabIndex={0}
+              aria-label="Previous period"
+            >
+              <ChevronLeft className="size-4" aria-hidden="true" />
+            </Link>
+            <span className="min-w-[7.5rem] border-x border-slate-300 px-2 text-center text-xs font-medium text-slate-800">
+              {periodLabel}
+            </span>
+            <Link
+              href={nextHref}
+              className="inline-flex h-8 w-8 items-center justify-center text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+              tabIndex={0}
+              aria-label="Next period"
+            >
+              <ChevronRight className="size-4" aria-hidden="true" />
+            </Link>
+          </div>
+
+          <RosterControls
+            units={units}
+            unitId={unitId}
+            view={view}
+            start={periodStart}
+          />
+
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400"
+              aria-hidden="true"
+            />
+            <Input
+              id="name-filter"
+              value={nameFilter}
+              onChange={(e) => setNameFilter(e.target.value)}
+              placeholder="Search"
+              aria-label="Filter by nurse name or employee ID"
+              className="h-8 w-40 pl-7 text-xs"
+            />
+          </div>
+
+          <div className="ml-auto flex flex-wrap items-center gap-1">
+            {draftCount > 0 ? (
+              <span className="inline-flex h-6 items-center rounded-full bg-amber-100 px-2 text-[11px] font-semibold text-amber-900 dark:bg-amber-900/60 dark:text-amber-100">
+                {draftCount} draft{draftCount === 1 ? "" : "s"}
+              </span>
+            ) : publishedCount > 0 ? (
+              <span className="inline-flex h-6 items-center rounded-full bg-teal-100 px-2 text-[11px] font-semibold text-teal-800 dark:bg-teal-900/60 dark:text-teal-100">
+                Published
+              </span>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                startTransition(async () => {
+                  const fd = new FormData();
+                  fd.set("unitId", unitId);
+                  fd.set("periodStart", periodStart);
+                  fd.set("periodEnd", periodEnd);
+                  applyResult(await copyPreviousPeriod(fd));
+                });
+              }}
+            >
+              Copy
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={exportCsv}
+            >
+              Export
+            </Button>
+            <RosterLegend />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={handleClearAll}
+              className="text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-950/40"
+              aria-label="Clear all assignments in this period"
+            >
+              Clear
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={handleDeleteCancelled}
+              className="text-rose-700 hover:bg-rose-50 hover:text-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
+              aria-label="Permanently delete cancelled shifts for this unit in the current period"
+              title="Permanently delete cancelled shifts for this unit in the current period"
+            >
+              Delete cancelled
+            </Button>
+            <Select
+              id="schedule-type"
+              value={scheduleTypeId}
+              onChange={(e) => setScheduleTypeId(e.target.value)}
+              aria-label="Select schedule type"
+              className="h-8 w-40 text-xs"
+            >
+              <option value="">
+                {scheduleTypes.length === 0 ? "Add a type first" : "Schedule type"}
+              </option>
+              {scheduleTypes.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </Select>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setTypesOpen(true)}
+              aria-label="Add, edit, or delete schedule types"
+            >
+              Types
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                if (!scheduleTypeId) {
+                  setError("Select a schedule type before generating.");
+                  return;
+                }
+                if (selectedNurses.size === 0) {
+                  setError("Select at least one staff member.");
+                  return;
+                }
+                startTransition(async () => {
+                  const fd = new FormData();
+                  fd.set("unitId", unitId);
+                  fd.set("periodStart", periodStart);
+                  fd.set("periodEnd", periodEnd);
+                  fd.set("scheduleTypeId", scheduleTypeId);
+                  fd.set("nurseIds", JSON.stringify([...selectedNurses]));
+                  applyResult(await runAutoRoster(fd));
+                });
+              }}
+              title="Select a schedule type and staff, then generate. Rest Days = weekends + holidays in this period."
+              aria-label="Auto-generate schedule for selected staff and schedule type"
+            >
+              Generate
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={draftCount > 0 ? "default" : "outline"}
+              disabled={pending || draftCount === 0}
+              onClick={() => {
+                startTransition(async () => {
+                  const fd = new FormData();
+                  fd.set("unitId", unitId);
+                  fd.set("periodStart", periodStart);
+                  fd.set("periodEnd", periodEnd);
+                  applyResult(await publishPeriod(fd));
+                });
+              }}
+              aria-label={
+                draftCount > 0
+                  ? `Publish ${draftCount} draft shifts`
+                  : "Nothing to publish"
+              }
+            >
+              {draftCount > 0 ? `Publish (${draftCount})` : "Publish"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full table-fixed border-collapse text-xs">
           <thead>
             <tr className="bg-slate-50">
-              <th className="sticky left-0 z-20 min-w-[200px] border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-left font-semibold">
-                Nurse
+              <th className="sticky left-0 z-20 w-40 border-b border-r border-slate-200 bg-slate-50 px-2 py-1 text-left font-semibold">
+                <div className="flex items-center justify-between gap-1">
+                  <span>Nurse</span>
+                  <button
+                    type="button"
+                    onClick={handleToggleAllStaff}
+                    className="rounded px-1 text-[10px] font-semibold uppercase tracking-wide text-teal-700 hover:bg-teal-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:text-teal-400 dark:hover:bg-teal-900/40"
+                    aria-label={
+                      allFilteredSelected
+                        ? "Unselect all staff"
+                        : "Select all staff"
+                    }
+                  >
+                    {allFilteredSelected ? "None" : "All"}
+                  </button>
+                </div>
               </th>
               {days.map((d) => (
                 <th
                   key={d}
                   className={cn(
-                    "min-w-[72px] border-b border-slate-200 px-1 py-2 text-center font-medium",
+                    "border-b border-slate-200 px-0 py-1 text-center font-medium leading-tight",
                     holidaySet.has(d) && "bg-slate-100",
                   )}
                 >
-                  <div>{format(new Date(d + "T12:00:00"), "EEE")}</div>
-                  <div className="text-xs font-normal text-slate-500">
-                    {format(new Date(d + "T12:00:00"), "MMM d")}
+                  <div className="text-[10px] uppercase text-slate-500">
+                    {format(new Date(d + "T12:00:00"), "EEEEE")}
+                  </div>
+                  <div className="text-[11px]">
+                    {format(new Date(d + "T12:00:00"), "d")}
                   </div>
                 </th>
               ))}
@@ -462,19 +571,34 @@ export const RosterGrid = ({
           </thead>
           <tbody>
             {filteredNurses.map((nurse) => (
-              <tr key={nurse.id} className="hover:bg-slate-50/80">
-                <td className="sticky left-0 z-10 border-b border-r border-slate-200 bg-white px-3 py-1">
-                  <label className="flex cursor-pointer items-start gap-2">
+              <tr
+                key={nurse.id}
+                className={cn(
+                  "hover:bg-slate-50/80",
+                  selectedNurses.has(nurse.id) && "bg-teal-50/60 dark:bg-teal-950/20",
+                )}
+              >
+                <td
+                  className={cn(
+                    "sticky left-0 z-10 w-40 overflow-hidden border-b border-r border-slate-200 px-2 py-0.5",
+                    selectedNurses.has(nurse.id)
+                      ? "bg-teal-50 dark:bg-teal-950/40"
+                      : "bg-white",
+                  )}
+                >
+                  <label className="flex cursor-pointer items-start gap-1.5">
                     <input
                       type="checkbox"
-                      className="mt-1"
+                      className="mt-1 shrink-0"
                       checked={selectedNurses.has(nurse.id)}
-                      onChange={() => toggleNurse(nurse.id)}
+                      onChange={() => handleToggleNurse(nurse.id)}
                       aria-label={`Select ${nurse.name}`}
                     />
-                    <span>
-                      <span className="block font-medium">{nurse.name}</span>
-                      <span className="block text-xs text-slate-500">
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium leading-tight">
+                        {nurse.name}
+                      </span>
+                      <span className="block truncate text-[10px] text-slate-500">
                         {nurse.employeeId}
                         {nurse.unitName ? ` · ${nurse.unitName}` : ""}
                       </span>
@@ -487,8 +611,10 @@ export const RosterGrid = ({
                   const isActive =
                     activeCell?.nurseId === nurse.id &&
                     activeCell?.dateKey === d;
+                  const isDraft = meta.assignment?.status === "DRAFT";
+                  const isPublished = meta.assignment?.status === "PUBLISHED";
                   return (
-                    <td key={d} className="border-b border-slate-100 p-0.5">
+                    <td key={d} className="border-b border-slate-100 p-px">
                       <button
                         type="button"
                         title={meta.title}
@@ -503,21 +629,18 @@ export const RosterGrid = ({
                         aria-label={`${nurse.name} on ${d}: ${meta.title}`}
                         tabIndex={0}
                         className={cn(
-                          "flex h-10 w-full flex-col items-center justify-center rounded border text-[11px] font-bold transition",
+                          "relative flex h-7 w-full items-center justify-center rounded-sm border text-[10px] font-bold leading-none transition",
                           colors.bg,
                           colors.text,
                           colors.border,
                           isActive && "ring-2 ring-teal-600",
                           !meta.locked && "hover:brightness-95",
                           meta.locked && "cursor-default opacity-90",
+                          isDraft && "border-dashed border-amber-500 shadow-[inset_0_2px_0_0_#f59e0b]",
+                          isPublished && "shadow-[inset_0_2px_0_0_#0d9488]",
                         )}
                       >
                         <span>{meta.code}</span>
-                        {meta.assignment?.status === "DRAFT" ? (
-                          <span className="text-[9px] font-normal opacity-70">
-                            draft
-                          </span>
-                        ) : null}
                       </button>
                     </td>
                   );
@@ -529,11 +652,74 @@ export const RosterGrid = ({
         {filteredNurses.length === 0 ? (
           <p className="p-4 text-sm text-slate-500">No nurses match filters.</p>
         ) : null}
+        </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmAction === "clear"}
+        title="Clear assignments?"
+        description="Clear selected marks shifts for checked staff as cancelled. Clear all marks every visible shift in this period as cancelled. Cells become Rest Day (RD). Rows stay in the database until you delete cancelled shifts."
+        pending={pending}
+        onCancel={() => setConfirmAction(null)}
+        actions={[
+          {
+            label: "Clear selected",
+            variant: "outline",
+            disabled: selectedNurses.size === 0,
+            onClick: () => handleClearAssignments("selected"),
+          },
+          {
+            label: "Clear all",
+            variant: "danger",
+            onClick: () => handleClearAssignments("all"),
+          },
+        ]}
+      />
+      <ConfirmDialog
+        open={confirmAction === "deleteCancelled"}
+        title="Delete cancelled shifts?"
+        description="This permanently removes every cancelled shift for this unit from the database, including other months. This cannot be undone."
+        confirmLabel="Delete cancelled"
+        pending={pending}
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={handleConfirmDeleteCancelled}
+      />
+
+      {typesOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Manage schedule types"
+          onClick={() => setTypesOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setTypesOpen(false);
+          }}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-lg bg-white p-4 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="font-display text-lg font-bold">Schedule types</h3>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setTypesOpen(false)}
+                aria-label="Close schedule types"
+              >
+                Close
+              </Button>
+            </div>
+            <ScheduleTypesManager types={scheduleTypes} />
+          </div>
+        </div>
+      ) : null}
 
       {activeCell ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Assign duty code"
@@ -572,7 +758,7 @@ export const RosterGrid = ({
                 disabled={pending}
                 onClick={handleClearCell}
               >
-                Clear / RD (Rest Day)
+                Clear / Rest Day (RD)
               </Button>
               <Button
                 type="button"

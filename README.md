@@ -35,7 +35,7 @@ Password for all accounts: `password123`
 ### Rostering module
 - Interactive nurse × date grid (sticky name column, scrollable dates)
 - Views: weekly, **15-day**, monthly
-- Color-coded cells: Day, Evening, Night, Off, Leave, Holiday
+- Color-coded cells: duty codes (7, 7A, 3…), Rest Day (RD), leave, holiday
 - Click cell to assign / change / clear
 - Fill mode (paint shifts across cells)
 - Bulk select nurses → apply or clear shifts

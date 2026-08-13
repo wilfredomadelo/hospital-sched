@@ -30,9 +30,10 @@ export default async function HolidaysPage({
         <div>
           <h2 className="font-display text-2xl font-bold">Holidays</h2>
           <p className="text-sm text-slate-600">
-            Set public holidays for {year}. Auto-roster counts these (plus
-            weekends) as each nurse&apos;s off-duty quota while still staffing
-            every day.
+            Set public holidays for {year}. Auto-roster counts Saturdays,
+            Sundays, and these holidays as each nurse&apos;s Rest Day (RD)
+            quota for the period, and spreads work / RD as evenly as possible
+            across days.
           </p>
         </div>
         <HolidayYearControls year={year} />

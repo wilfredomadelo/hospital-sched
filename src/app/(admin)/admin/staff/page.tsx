@@ -203,7 +203,7 @@ export default async function StaffPage({
                         {nurse.unit.name}
                       </Badge>
                     ) : null}
-                    <Badge className="bg-amber-50 text-amber-800">
+                    <Badge className="bg-amber-50 text-amber-800 dark:bg-amber-900/70 dark:text-amber-200">
                       Lic. exp {format(nurse.licenseExpiresAt, "MMM d, yyyy")}
                     </Badge>
                   </div>

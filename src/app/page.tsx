@@ -1,15 +1,19 @@
 import Link from "next/link";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { homeForRole } from "@/lib/session";
 import { redirect } from "next/navigation";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export default async function HomePage() {
-  const session = await auth();
-  if (session?.user) redirect(homeForRole(session.user.role));
+  const session = await getSession();
+  if (session?.user?.role) redirect(homeForRole(session.user.role));
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center px-6 py-16">
-      <p className="text-sm font-semibold uppercase tracking-widest text-teal-700">
+    <main className="relative mx-auto flex min-h-screen max-w-3xl flex-col justify-center px-6 py-16">
+      <div className="absolute right-6 top-6">
+        <ThemeToggle />
+      </div>
+      <p className="text-sm font-semibold uppercase tracking-widest text-teal-700 dark:text-teal-400">
         Workforce
       </p>
       <h1 className="font-display mt-2 text-4xl font-bold text-slate-900 md:text-5xl">
@@ -22,7 +26,7 @@ export default async function HomePage() {
       <div className="mt-8">
         <Link
           href="/login"
-          className="inline-flex h-11 items-center rounded-md bg-teal-700 px-6 text-sm font-medium text-white hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+          className="inline-flex h-11 items-center rounded-md bg-teal-700 px-6 text-sm font-medium text-[#fff] hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:bg-teal-600 dark:hover:bg-teal-500"
           aria-label="Sign in to Hospital Nurse Scheduling"
         >
           Sign in
