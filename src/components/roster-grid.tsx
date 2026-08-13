@@ -1,24 +1,28 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
+import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import {
   assignShift,
   bulkClearAssignments,
   copyPreviousPeriod,
+  publishPeriod,
   runAutoRoster,
   type AssignResult,
 } from "@/app/actions/shifts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { RosterControls } from "@/components/roster-controls";
 import { RosterLegend } from "@/components/roster-legend";
 import {
   formatDutyLabel,
   statusByCode,
   styleForCode,
 } from "@/lib/scheduling/duty-codes";
+import type { RosterViewMode } from "@/lib/scheduling/period";
 import { cn } from "@/lib/utils";
 
 export type RosterNurse = {
@@ -52,6 +56,9 @@ type Props = {
   unitId: string;
   periodStart: string;
   periodEnd: string;
+  periodLabel: string;
+  prevHref: string;
+  nextHref: string;
   days: string[];
   nurses: RosterNurse[];
   assignments: RosterAssignment[];
@@ -59,13 +66,17 @@ type Props = {
   holidayKeys: string[];
   holidayNames: Record<string, string>;
   templates: RosterTemplate[];
-  view: string;
+  view: RosterViewMode;
+  units: { id: string; name: string }[];
 };
 
 export const RosterGrid = ({
   unitId,
   periodStart,
   periodEnd,
+  periodLabel,
+  prevHref,
+  nextHref,
   days,
   nurses,
   assignments,
@@ -74,6 +85,7 @@ export const RosterGrid = ({
   holidayNames,
   templates,
   view,
+  units,
 }: Props) => {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -104,6 +116,12 @@ export const RosterGrid = ({
         n.employeeId.toLowerCase().includes(q),
     );
   }, [nurses, nameFilter]);
+
+  const draftCount = useMemo(
+    () => assignments.filter((a) => a.status === "DRAFT").length,
+    [assignments],
+  );
+  const publishedCount = assignments.length - draftCount;
 
   const applyResult = (result: AssignResult) => {
     if (result.error) {
@@ -229,74 +247,7 @@ export const RosterGrid = ({
   const templateLabel = (t: RosterTemplate) => formatDutyLabel(t.name);
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-slate-500">
-          Codes: duty (7, 7A, 3…) · Rest Day (RD) · leave (VL, SL…). Auto-generate:
-          RD per nurse = Saturdays + Sundays + holidays in this period; staffing
-          spread evenly across days.
-        </p>
-        <RosterLegend />
-      </div>
-
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
-        <div className="space-y-1">
-          <Label htmlFor="name-filter">Search nurse / ID</Label>
-          <Input
-            id="name-filter"
-            value={nameFilter}
-            onChange={(e) => setNameFilter(e.target.value)}
-            placeholder="Name or license #"
-            aria-label="Filter by nurse name or employee ID"
-          />
-        </div>
-        <Button type="button" variant="outline" onClick={exportCsv}>
-          Export CSV
-        </Button>
-        <Button
-          type="button"
-          disabled={pending}
-          onClick={() => {
-            startTransition(async () => {
-              const fd = new FormData();
-              fd.set("unitId", unitId);
-              fd.set("periodStart", periodStart);
-              fd.set("periodEnd", periodEnd);
-              applyResult(await runAutoRoster(fd));
-            });
-          }}
-          title="Each nurse gets Rest Days (RD) equal to Saturdays + Sundays + holidays in this period. Work and RD days are spread evenly."
-          aria-label="Auto-generate schedule with Rest Day quota from weekends and holidays"
-        >
-          Auto-generate
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={pending}
-          onClick={() => {
-            startTransition(async () => {
-              const fd = new FormData();
-              fd.set("unitId", unitId);
-              fd.set("periodStart", periodStart);
-              fd.set("periodEnd", periodEnd);
-              applyResult(await copyPreviousPeriod(fd));
-            });
-          }}
-        >
-          Copy previous period
-        </Button>
-        <Button
-          type="button"
-          variant="danger"
-          disabled={pending}
-          onClick={handleClearAll}
-          aria-label="Clear all assignments in this period"
-        >
-          Clear all
-        </Button>
-      </div>
-
+    <div className="space-y-2">
       {error ? (
         <p className="text-sm text-rose-600 dark:text-rose-400" role="alert">
           {error}
@@ -308,8 +259,144 @@ export const RosterGrid = ({
         </p>
       ) : null}
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table className="w-full table-fixed border-collapse text-xs">
+      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 px-2 py-1.5">
+          <div className="inline-flex h-8 items-center overflow-hidden rounded-md border border-slate-300">
+            <Link
+              href={prevHref}
+              className="inline-flex h-8 w-8 items-center justify-center text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+              tabIndex={0}
+              aria-label="Previous period"
+            >
+              <ChevronLeft className="size-4" aria-hidden="true" />
+            </Link>
+            <span className="min-w-[7.5rem] border-x border-slate-300 px-2 text-center text-xs font-medium text-slate-800">
+              {periodLabel}
+            </span>
+            <Link
+              href={nextHref}
+              className="inline-flex h-8 w-8 items-center justify-center text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+              tabIndex={0}
+              aria-label="Next period"
+            >
+              <ChevronRight className="size-4" aria-hidden="true" />
+            </Link>
+          </div>
+
+          <RosterControls
+            units={units}
+            unitId={unitId}
+            view={view}
+            start={periodStart}
+          />
+
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400"
+              aria-hidden="true"
+            />
+            <Input
+              id="name-filter"
+              value={nameFilter}
+              onChange={(e) => setNameFilter(e.target.value)}
+              placeholder="Search"
+              aria-label="Filter by nurse name or employee ID"
+              className="h-8 w-40 pl-7 text-xs"
+            />
+          </div>
+
+          <div className="ml-auto flex flex-wrap items-center gap-1">
+            {draftCount > 0 ? (
+              <span className="inline-flex h-6 items-center rounded-full bg-amber-100 px-2 text-[11px] font-semibold text-amber-900 dark:bg-amber-900/60 dark:text-amber-100">
+                {draftCount} draft{draftCount === 1 ? "" : "s"}
+              </span>
+            ) : publishedCount > 0 ? (
+              <span className="inline-flex h-6 items-center rounded-full bg-teal-100 px-2 text-[11px] font-semibold text-teal-800 dark:bg-teal-900/60 dark:text-teal-100">
+                Published
+              </span>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                startTransition(async () => {
+                  const fd = new FormData();
+                  fd.set("unitId", unitId);
+                  fd.set("periodStart", periodStart);
+                  fd.set("periodEnd", periodEnd);
+                  applyResult(await copyPreviousPeriod(fd));
+                });
+              }}
+            >
+              Copy
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={exportCsv}
+            >
+              Export
+            </Button>
+            <RosterLegend />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={pending}
+              onClick={handleClearAll}
+              className="text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-950/40"
+              aria-label="Clear all assignments in this period"
+            >
+              Clear
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                startTransition(async () => {
+                  const fd = new FormData();
+                  fd.set("unitId", unitId);
+                  fd.set("periodStart", periodStart);
+                  fd.set("periodEnd", periodEnd);
+                  applyResult(await runAutoRoster(fd));
+                });
+              }}
+              title="Each nurse gets Rest Days (RD) equal to Saturdays + Sundays + holidays in this period. Work and RD days are spread evenly."
+              aria-label="Auto-generate schedule with Rest Day quota from weekends and holidays"
+            >
+              Generate
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={draftCount > 0 ? "default" : "outline"}
+              disabled={pending || draftCount === 0}
+              onClick={() => {
+                startTransition(async () => {
+                  const fd = new FormData();
+                  fd.set("unitId", unitId);
+                  fd.set("periodStart", periodStart);
+                  fd.set("periodEnd", periodEnd);
+                  applyResult(await publishPeriod(fd));
+                });
+              }}
+              aria-label={
+                draftCount > 0
+                  ? `Publish ${draftCount} draft shifts`
+                  : "Nothing to publish"
+              }
+            >
+              {draftCount > 0 ? `Publish (${draftCount})` : "Publish"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full table-fixed border-collapse text-xs">
           <thead>
             <tr className="bg-slate-50">
               <th className="sticky left-0 z-20 w-32 border-b border-r border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-semibold">
@@ -353,6 +440,8 @@ export const RosterGrid = ({
                   const isActive =
                     activeCell?.nurseId === nurse.id &&
                     activeCell?.dateKey === d;
+                  const isDraft = meta.assignment?.status === "DRAFT";
+                  const isPublished = meta.assignment?.status === "PUBLISHED";
                   return (
                     <td key={d} className="border-b border-slate-100 p-px">
                       <button
@@ -369,14 +458,15 @@ export const RosterGrid = ({
                         aria-label={`${nurse.name} on ${d}: ${meta.title}`}
                         tabIndex={0}
                         className={cn(
-                          "flex h-7 w-full items-center justify-center rounded-sm border text-[10px] font-bold leading-none transition",
+                          "relative flex h-7 w-full items-center justify-center rounded-sm border text-[10px] font-bold leading-none transition",
                           colors.bg,
                           colors.text,
                           colors.border,
                           isActive && "ring-2 ring-teal-600",
                           !meta.locked && "hover:brightness-95",
                           meta.locked && "cursor-default opacity-90",
-                          meta.assignment?.status === "DRAFT" && "opacity-80",
+                          isDraft && "border-dashed border-amber-500 shadow-[inset_0_2px_0_0_#f59e0b]",
+                          isPublished && "shadow-[inset_0_2px_0_0_#0d9488]",
                         )}
                       >
                         <span>{meta.code}</span>
@@ -391,6 +481,7 @@ export const RosterGrid = ({
         {filteredNurses.length === 0 ? (
           <p className="p-4 text-sm text-slate-500">No nurses match filters.</p>
         ) : null}
+        </div>
       </div>
 
       {activeCell ? (

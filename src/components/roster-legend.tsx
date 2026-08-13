@@ -16,7 +16,7 @@ export const RosterLegend = () => {
     <>
       <Button
         type="button"
-        variant="outline"
+        variant="ghost"
         size="sm"
         onClick={() => setOpen(true)}
         aria-label="Open duty code legend"
@@ -83,6 +83,30 @@ export const RosterLegend = () => {
                     </li>
                   );
                 })}
+              </ul>
+            </section>
+
+            <section className="mb-6">
+              <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+                Draft vs published
+              </h4>
+              <ul className="grid gap-1.5 sm:grid-cols-2">
+                <li className="flex items-center gap-2 rounded-md border border-slate-100 px-2 py-1.5 text-sm">
+                  <span className="inline-flex min-w-[3rem] justify-center rounded-sm border border-dashed border-amber-500 bg-emerald-100 px-1.5 py-0.5 text-xs font-bold text-emerald-900 shadow-[inset_0_2px_0_0_#f59e0b]">
+                    7
+                  </span>
+                  <span className="text-slate-700">
+                    Draft — not visible to nurses yet
+                  </span>
+                </li>
+                <li className="flex items-center gap-2 rounded-md border border-slate-100 px-2 py-1.5 text-sm">
+                  <span className="inline-flex min-w-[3rem] justify-center rounded-sm border border-teal-300 bg-emerald-100 px-1.5 py-0.5 text-xs font-bold text-emerald-900 shadow-[inset_0_2px_0_0_#0d9488]">
+                    7
+                  </span>
+                  <span className="text-slate-700">
+                    Published — live on the nurse roster
+                  </span>
+                </li>
               </ul>
             </section>
 

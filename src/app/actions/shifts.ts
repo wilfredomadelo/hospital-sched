@@ -11,7 +11,7 @@ import {
   hasBlockingIssues,
   persistAlerts,
 } from "@/lib/scheduling/compliance";
-import { createNotification } from "@/lib/notifications";
+import { createNotifications } from "@/lib/notifications";
 import { generateRoster } from "@/lib/scheduling/generator";
 
 const combineDateAndTime = (date: Date, time: string) => {
@@ -191,12 +191,14 @@ export const cancelAssignment = async (formData: FormData): Promise<void> => {
   revalidatePath("/nurse");
 };
 
-export const publishPeriod = async (formData: FormData): Promise<void> => {
+export const publishPeriod = async (formData: FormData): Promise<AssignResult> => {
   await requireRole([Role.ADMIN, Role.SUPERVISOR]);
   const unitId = String(formData.get("unitId") ?? "");
   const startStr = String(formData.get("periodStart") ?? "");
   const endStr = String(formData.get("periodEnd") ?? "");
-  if (!unitId || !startStr || !endStr) return;
+  if (!unitId || !startStr || !endStr) {
+    return { error: "Missing unit or period." };
+  }
 
   const periodStart = parseISO(startStr);
   const periodEnd = parseISO(endStr);
@@ -207,8 +209,15 @@ export const publishPeriod = async (formData: FormData): Promise<void> => {
       status: ShiftStatus.DRAFT,
       startAt: { gte: periodStart, lt: periodEnd },
     },
-    include: { nurse: { include: { user: true } }, template: true },
+    select: { nurse: { select: { userId: true } } },
   });
+
+  if (drafts.length === 0) {
+    return { success: true, warnings: ["No drafts to publish."] };
+  }
+
+  const userIds = [...new Set(drafts.map((d) => d.nurse.userId))];
+  const rangeLabel = `${format(periodStart, "MMM d")}–${format(addDays(periodEnd, -1), "MMM d, yyyy")}`;
 
   await prisma.shiftAssignment.updateMany({
     where: {
@@ -219,17 +228,21 @@ export const publishPeriod = async (formData: FormData): Promise<void> => {
     data: { status: ShiftStatus.PUBLISHED },
   });
 
-  for (const draft of drafts) {
-    await createNotification({
-      userId: draft.nurse.userId,
+  await createNotifications(
+    userIds.map((userId) => ({
+      userId,
       title: "Schedule published",
-      body: `Your ${draft.template.name} shift on ${format(draft.startAt, "EEE MMM d")} is now published.`,
-    });
-  }
+      body: `Your roster for ${rangeLabel} is now published.`,
+    })),
+  );
 
   revalidatePath("/admin/roster");
   revalidatePath("/nurse");
   revalidatePath("/nurse/notifications");
+  return {
+    success: true,
+    warnings: [`Published ${drafts.length} shifts to ${userIds.length} nurses.`],
+  };
 };
 
 /** @deprecated use publishPeriod */
