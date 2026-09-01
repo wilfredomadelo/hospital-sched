@@ -19,10 +19,10 @@ export type ComplianceIssue = {
   nurseId?: string;
 };
 
-type AssignmentLike = Pick<
-  ShiftAssignment,
-  "id" | "nurseId" | "startAt" | "endAt" | "status"
->;
+type IntervalLike = Pick<ShiftAssignment, "id" | "startAt" | "endAt">;
+
+type AssignmentLike = IntervalLike &
+  Pick<ShiftAssignment, "nurseId" | "status">;
 
 const hoursBetween = (start: Date, end: Date) =>
   differenceInMinutes(end, start) / 60;
@@ -112,14 +112,17 @@ export const evaluateAssignment = async (params: {
     });
   }
 
-  const restIssues = checkRestGaps([...existing, { id: "new", nurseId: nurse.id, startAt, endAt, status: ShiftStatus.DRAFT }], "new");
+  const restIssues = checkRestGaps(
+    [...existing, { id: "new", startAt, endAt }],
+    "new",
+  );
   issues.push(...restIssues.map((i) => ({ ...i, nurseId: nurse.id })));
 
   return issues;
 };
 
 const checkRestGaps = (
-  assignments: AssignmentLike[],
+  assignments: IntervalLike[],
   focusId?: string,
 ): ComplianceIssue[] => {
   const sorted = [...assignments].sort(
@@ -134,16 +137,34 @@ const checkRestGaps = (
     const gap = next.startAt.getTime() - current.endAt.getTime();
     if (gap >= 0 && gap < minRestMs) {
       if (focusId && current.id !== focusId && next.id !== focusId) continue;
+      const gapHours = gap / (60 * 60 * 1000);
       issues.push({
         type: AlertType.REST_PERIOD,
-        severity: AlertSeverity.WARNING,
-        message: `Less than ${MIN_REST_HOURS}h rest between shifts.`,
+        severity: AlertSeverity.BLOCK,
+        message:
+          gap === 0
+            ? "Connecting schedules are not allowed (one shift ends exactly when the next starts)."
+            : `Less than ${MIN_REST_HOURS}h rest between shifts (${gapHours.toFixed(1)}h gap).`,
         relatedAssignmentIds: [current.id, next.id].filter((id) => id !== "new"),
       });
     }
   }
   return issues;
 };
+
+/** True when a proposed shift leaves less than MIN_REST_HOURS after/before an existing one. */
+export const hasInsufficientRest = (
+  startAt: Date,
+  endAt: Date,
+  existing: IntervalLike[],
+) =>
+  checkRestGaps(
+    [
+      ...existing,
+      { id: "new", startAt, endAt },
+    ],
+    "new",
+  ).length > 0;
 
 export const persistAlerts = async (issues: ComplianceIssue[]) => {
   if (issues.length === 0) return;

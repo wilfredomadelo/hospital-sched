@@ -13,6 +13,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { DUTY_CODES } from "@/lib/scheduling/duty-codes";
+import { hasInsufficientRest } from "@/lib/scheduling/compliance";
 
 const combineDateAndTime = (date: Date, time: string) => {
   const [h, m] = time.split(":").map(Number);
@@ -81,6 +82,63 @@ const onLeaveOverlap = (
   return leaves.some((l) => l.startDate <= endAt && l.endDate >= startAt);
 };
 
+const MAX_CONSECUTIVE_WORK_DAYS = 6;
+const PREFERRED_RD_BLOCK = 2;
+
+const computeRdBlockSize = (remainingRd: number, remainingDays: number) => {
+  if (remainingRd <= 0 || remainingDays <= 0) return 0;
+  if (remainingRd >= PREFERRED_RD_BLOCK && remainingDays >= PREFERRED_RD_BLOCK) {
+    return PREFERRED_RD_BLOCK;
+  }
+  return 1;
+};
+
+const consecutiveWorkStreak = (params: {
+  nurseId: string;
+  dayIdx: number;
+  days: Date[];
+  offPlan: Map<string, Set<string>>;
+  leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>;
+  workedKeys: Set<string>;
+}) => {
+  const { nurseId, dayIdx, days, offPlan, leaveByNurse, workedKeys } = params;
+  let streak = 0;
+  for (let i = dayIdx - 1; i >= 0; i--) {
+    const day = days[i];
+    const key = dayKey(day);
+    if (offPlan.get(nurseId)?.has(key)) break;
+    if (onLeaveThatDay(nurseId, day, leaveByNurse)) break;
+    if (!workedKeys.has(`${nurseId}|${key}`)) break;
+    streak++;
+  }
+  return streak;
+};
+
+const addConsecutiveRd = (
+  nurseId: string,
+  startIdx: number,
+  blockSize: number,
+  days: Date[],
+  offPlan: Map<string, Set<string>>,
+  leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>,
+  licenseExpiresAt: Date,
+) => {
+  let added = 0;
+  for (let i = startIdx; i < days.length && added < blockSize; i++) {
+    const day = days[i];
+    const key = dayKey(day);
+    if (offPlan.get(nurseId)?.has(key)) {
+      added++;
+      continue;
+    }
+    if (licenseExpiresAt < day) break;
+    if (onLeaveThatDay(nurseId, day, leaveByNurse)) continue;
+    offPlan.get(nurseId)!.add(key);
+    added++;
+  }
+  return added;
+};
+
 /** In-memory hard blocks only (no DB). Soft warnings are ignored during auto-gen. */
 const isBlocked = (params: {
   nurse: NurseWithUser;
@@ -97,6 +155,7 @@ const isBlocked = (params: {
       return true;
     }
   }
+  if (hasInsufficientRest(startAt, endAt, existing)) return true;
   return false;
 };
 
@@ -104,6 +163,9 @@ const isBlocked = (params: {
  * Auto-roster rules:
  * - Rest Day (RD) per nurse = count of Saturdays + Sundays + public holidays
  *   in the selected period (holiday on a weekend counts once)
+ * - RDs are assigned in consecutive blocks (not scattered singles)
+ * - No nurse works more than 6 consecutive days without RD
+ * - At least 8h rest between shifts (connecting schedules blocked)
  * - Remaining days are work days
  * - RDs and on-duty headcount spread as evenly as possible across days
  * - Every day has at least one nurse on duty
@@ -265,16 +327,35 @@ export const generateRoster = async (params: {
 
   const nightCounts = new Map(nurses.map((n) => [n.id, 0]));
   const workDays = new Map(nurses.map((n) => [n.id, 0]));
+  const workedKeys = new Set<string>();
   const pending: PendingCreate[] = [];
   let blocked = 0;
   let unstaffedDays = 0;
   let memId = 0;
+  const dayIndexByKey = new Map(days.map((day, idx) => [dayKey(day), idx]));
 
   const tryPlace = (
     nurse: NurseWithUser,
     template: ShiftTemplate,
     day: Date,
+    allowOverWorkCap = false,
   ) => {
+    const key = dayKey(day);
+    const dayIdx = dayIndexByKey.get(key) ?? -1;
+    if (offPlan.get(nurse.id)?.has(key)) return false;
+
+    const streak = consecutiveWorkStreak({
+      nurseId: nurse.id,
+      dayIdx,
+      days,
+      offPlan,
+      leaveByNurse,
+      workedKeys,
+    });
+    if (!allowOverWorkCap && streak >= MAX_CONSECUTIVE_WORK_DAYS) {
+      return false;
+    }
+
     const { startAt, endAt } = templateInterval(template, day);
     const existing = byNurse.get(nurse.id) ?? [];
     if (
@@ -300,6 +381,7 @@ export const generateRoster = async (params: {
       endAt,
       status: ShiftStatus.DRAFT,
     });
+    workedKeys.add(`${nurse.id}|${key}`);
     workDays.set(nurse.id, (workDays.get(nurse.id) ?? 0) + 1);
     if (template.isNight) {
       nightCounts.set(nurse.id, (nightCounts.get(nurse.id) ?? 0) + 1);
@@ -355,12 +437,12 @@ export const generateRoster = async (params: {
       return false;
     };
 
-    const fillNurse = (nurse: NurseWithUser) => {
+    const fillNurse = (nurse: NurseWithUser, allowOverWorkCap = false) => {
       const ranked = [...placeTemplates].sort(
         (a, b) => (todayCount.get(a.id) ?? 0) - (todayCount.get(b.id) ?? 0),
       );
       for (const template of ranked) {
-        if (tryPlace(nurse, template, day)) {
+        if (tryPlace(nurse, template, day, allowOverWorkCap)) {
           assigned.add(nurse.id);
           todayCount.set(template.id, (todayCount.get(template.id) ?? 0) + 1);
           return true;
@@ -381,8 +463,23 @@ export const generateRoster = async (params: {
     for (const nurse of leftover) {
       const needsRd = (offPlan.get(nurse.id)?.size ?? 0) < rdQuota;
       const atWorkCap = (workDays.get(nurse.id) ?? 0) >= workTarget;
-      if ((assigned.size >= targetOnDuty && needsRd) || atWorkCap) {
-        if (needsRd) offPlan.get(nurse.id)!.add(key);
+      const dayIdx = dayIndexByKey.get(key) ?? 0;
+      const workStreak = consecutiveWorkStreak({
+        nurseId: nurse.id,
+        dayIdx,
+        days,
+        offPlan,
+        leaveByNurse,
+        workedKeys,
+      });
+      const mustRest =
+        workStreak >= MAX_CONSECUTIVE_WORK_DAYS ||
+        ((assigned.size >= targetOnDuty && needsRd) || atWorkCap);
+
+      if (mustRest) {
+        if (needsRd || workStreak >= MAX_CONSECUTIVE_WORK_DAYS) {
+          offPlan.get(nurse.id)!.add(key);
+        }
         continue;
       }
       if (fillNurse(nurse)) continue;
@@ -395,7 +492,7 @@ export const generateRoster = async (params: {
         .filter((n) => offPlan.get(n.id)?.has(key))
         .sort(sortByLoad);
       const rescue = resting[0];
-      if (rescue && fillNurse(rescue)) {
+      if (rescue && fillNurse(rescue, true)) {
         offPlan.get(rescue.id)?.delete(key);
       } else {
         unstaffedDays += 1;
@@ -411,6 +508,9 @@ export const generateRoster = async (params: {
     byNurse,
     workDays,
     nightCounts,
+    workedKeys,
+    days,
+    leaveByNurse,
   });
 
   // Batch insert — main speed win vs per-row create + compliance queries
@@ -432,7 +532,7 @@ export const generateRoster = async (params: {
   return {
     created,
     skipped: blocked,
-    message: `Generated ${created} drafts. RD quota = ${rdQuota}/nurse (${weekendCount} weekends + ${holidayOnlyCount} holidays). ~${targetOnDuty} on duty/day. RD range ${minRd}–${maxRd}, avg work ${avgWork.toFixed(1)}/${workTarget}.${
+    message: `Generated ${created} drafts. RD quota = ${rdQuota}/nurse (${weekendCount} weekends + ${holidayOnlyCount} holidays). Consecutive RD blocks, max ${MAX_CONSECUTIVE_WORK_DAYS} work days in a row. ~${targetOnDuty} on duty/day. RD range ${minRd}–${maxRd}, avg work ${avgWork.toFixed(1)}/${workTarget}.${
       unstaffedSlots > 0
         ? ` ${unstaffedSlots} shift slot(s) had no staff.`
         : " All schedule-type shifts staffed."
@@ -460,9 +560,22 @@ const restoreRestDayQuota = (params: {
   byNurse: Map<string, MemAssignment[]>;
   workDays: Map<string, number>;
   nightCounts: Map<string, number>;
+  workedKeys: Set<string>;
+  days: Date[];
+  leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>;
 }) => {
-  const { nurses, offPlan, rdQuota, pending, byNurse, workDays, nightCounts } =
-    params;
+  const {
+    nurses,
+    offPlan,
+    rdQuota,
+    pending,
+    byNurse,
+    workDays,
+    nightCounts,
+    workedKeys,
+    days,
+    leaveByNurse,
+  } = params;
 
   const staffedByDay = () => {
     const map = new Map<string, number>();
@@ -471,6 +584,28 @@ const restoreRestDayQuota = (params: {
       map.set(key, (map.get(key) ?? 0) + 1);
     }
     return map;
+  };
+
+  const removeAssignment = (pick: { row: PendingCreate; index: number }) => {
+    const key = dayKey(pick.row.startAt);
+    pending.splice(pick.index, 1);
+    const mem = byNurse.get(pick.row.nurseId) ?? [];
+    const memIdx = mem.findIndex(
+      (m) => m.startAt.getTime() === pick.row.startAt.getTime(),
+    );
+    if (memIdx >= 0) mem.splice(memIdx, 1);
+    workDays.set(
+      pick.row.nurseId,
+      Math.max(0, (workDays.get(pick.row.nurseId) ?? 0) - 1),
+    );
+    workedKeys.delete(`${pick.row.nurseId}|${key}`);
+    if (dayKey(pick.row.endAt) !== key) {
+      nightCounts.set(
+        pick.row.nurseId,
+        Math.max(0, (nightCounts.get(pick.row.nurseId) ?? 0) - 1),
+      );
+    }
+    offPlan.get(pick.row.nurseId)!.add(key);
   };
 
   for (const nurse of nurses) {
@@ -490,23 +625,81 @@ const restoreRestDayQuota = (params: {
       );
       if (!pick) break;
 
-      const key = dayKey(pick.row.startAt);
-      pending.splice(pick.index, 1);
-      const mem = byNurse.get(nurse.id) ?? [];
-      const memIdx = mem.findIndex(
-        (m) => m.startAt.getTime() === pick.row.startAt.getTime(),
-      );
-      if (memIdx >= 0) mem.splice(memIdx, 1);
-      workDays.set(nurse.id, Math.max(0, (workDays.get(nurse.id) ?? 0) - 1));
-      if (dayKey(pick.row.endAt) !== key) {
-        nightCounts.set(
-          nurse.id,
-          Math.max(0, (nightCounts.get(nurse.id) ?? 0) - 1),
-        );
-      }
-      offPlan.get(nurse.id)!.add(key);
+      removeAssignment(pick);
     }
   }
+
+  for (const nurse of nurses) {
+    let rdCount = offPlan.get(nurse.id)?.size ?? 0;
+    while (rdCount < rdQuota) {
+      const remaining = rdQuota - rdCount;
+      const startIdx = findBestRdBlockStart({
+        nurse,
+        days,
+        offPlan,
+        leaveByNurse,
+      });
+      if (startIdx < 0) break;
+
+      const added = addConsecutiveRd(
+        nurse.id,
+        startIdx,
+        computeRdBlockSize(remaining, days.length - startIdx),
+        days,
+        offPlan,
+        leaveByNurse,
+        nurse.licenseExpiresAt,
+      );
+      if (added === 0) break;
+      rdCount += added;
+    }
+  }
+};
+
+const findBestRdBlockStart = (params: {
+  nurse: NurseWithUser;
+  days: Date[];
+  offPlan: Map<string, Set<string>>;
+  leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>;
+}) => {
+  const { nurse, days, offPlan, leaveByNurse } = params;
+  let bestIdx = -1;
+  let bestScore = -Infinity;
+
+  for (let idx = 0; idx < days.length; idx++) {
+    const day = days[idx];
+    const key = dayKey(day);
+    if (offPlan.get(nurse.id)?.has(key)) continue;
+    if (nurse.licenseExpiresAt < day) continue;
+    if (onLeaveThatDay(nurse.id, day, leaveByNurse)) continue;
+
+    const prevIsRd =
+      idx > 0 && offPlan.get(nurse.id)?.has(dayKey(days[idx - 1]));
+    const nextIsRd =
+      idx < days.length - 1 &&
+      offPlan.get(nurse.id)?.has(dayKey(days[idx + 1]));
+    const workStreak = consecutiveWorkStreak({
+      nurseId: nurse.id,
+      dayIdx: idx,
+      days,
+      offPlan,
+      leaveByNurse,
+      workedKeys: new Set(),
+    });
+
+    let score = 0;
+    if (prevIsRd || nextIsRd) score += 100;
+    if (isWeekend(day)) score += 20;
+    if (workStreak >= MAX_CONSECUTIVE_WORK_DAYS) score += 50;
+    score -= Math.abs(workStreak - MAX_CONSECUTIVE_WORK_DAYS);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = idx;
+    }
+  }
+
+  return bestIdx;
 };
 
 const buildRestDayPlan = (params: {
@@ -521,15 +714,102 @@ const buildRestDayPlan = (params: {
     params;
 
   const offPlan = new Map<string, Set<string>>();
-  const offCount = new Map<string, number>();
-  const lastRdIdx = new Map<string, number>();
-  for (const n of nurses) {
-    offPlan.set(n.id, new Set());
-    offCount.set(n.id, 0);
-    lastRdIdx.set(n.id, -999);
+  for (const nurse of nurses) {
+    offPlan.set(nurse.id, new Set());
   }
 
   if (rdQuota <= 0 || days.length === 0) return offPlan;
+
+  for (const [nurseIdx, nurse] of nurses.entries()) {
+    let rdCount = 0;
+    let workStreak = nurseIdx % MAX_CONSECUTIVE_WORK_DAYS;
+    let rdBlockRemaining = 0;
+
+    for (let dayIdx = 0; dayIdx < days.length; dayIdx++) {
+      const day = days[dayIdx];
+      const key = dayKey(day);
+
+      if (nurse.licenseExpiresAt < day) continue;
+      if (onLeaveThatDay(nurse.id, day, leaveByNurse)) {
+        workStreak = 0;
+        rdBlockRemaining = 0;
+        continue;
+      }
+
+      if (rdBlockRemaining > 0 && rdCount < rdQuota) {
+        offPlan.get(nurse.id)!.add(key);
+        rdCount++;
+        rdBlockRemaining--;
+        workStreak = 0;
+        continue;
+      }
+
+      const rdStillNeeded = rdCount < rdQuota;
+      const mustRest = workStreak >= MAX_CONSECUTIVE_WORK_DAYS;
+
+      if (mustRest && rdStillNeeded) {
+        const blockSize = computeRdBlockSize(
+          rdQuota - rdCount,
+          days.length - dayIdx,
+        );
+        offPlan.get(nurse.id)!.add(key);
+        rdCount++;
+        rdBlockRemaining = blockSize - 1;
+        workStreak = 0;
+        continue;
+      }
+
+      workStreak++;
+    }
+
+    while (rdCount < rdQuota) {
+      const remaining = rdQuota - rdCount;
+      const startIdx = findBestRdBlockStart({
+        nurse,
+        days,
+        offPlan,
+        leaveByNurse,
+      });
+      if (startIdx < 0) break;
+
+      const added = addConsecutiveRd(
+        nurse.id,
+        startIdx,
+        computeRdBlockSize(remaining, days.length - startIdx),
+        days,
+        offPlan,
+        leaveByNurse,
+        nurse.licenseExpiresAt,
+      );
+      if (added === 0) break;
+      rdCount += added;
+    }
+  }
+
+  balanceRestDayStaffing({
+    nurses,
+    days,
+    leaveByNurse,
+    offPlan,
+    rdQuota,
+    minOnDuty,
+    targetOnDuty,
+  });
+
+  return offPlan;
+};
+
+const balanceRestDayStaffing = (params: {
+  nurses: NurseWithUser[];
+  days: Date[];
+  leaveByNurse: Map<string, { startDate: Date; endDate: Date }[]>;
+  offPlan: Map<string, Set<string>>;
+  rdQuota: number;
+  minOnDuty: number;
+  targetOnDuty: number;
+}) => {
+  const { nurses, days, leaveByNurse, offPlan, rdQuota, minOnDuty, targetOnDuty } =
+    params;
 
   const available = (day: Date) =>
     nurses.filter(
@@ -538,81 +818,82 @@ const buildRestDayPlan = (params: {
         !onLeaveThatDay(n.id, day, leaveByNurse),
     );
 
-  const gapSinceLastRd = (nurseId: string, dayIdx: number) =>
-    dayIdx - (lastRdIdx.get(nurseId) ?? -999);
+  const onDutyCount = (day: Date) => {
+    const key = dayKey(day);
+    return available(day).filter((n) => !offPlan.get(n.id)?.has(key)).length;
+  };
 
-  for (let dayIdx = 0; dayIdx < days.length; dayIdx++) {
-    const day = days[dayIdx];
+  for (const day of days) {
+    const key = dayKey(day);
+    while (onDutyCount(day) < minOnDuty) {
+      const candidate = available(day)
+        .filter((n) => offPlan.get(n.id)?.has(key))
+        .sort((a, b) => (offPlan.get(a.id)?.size ?? 0) - (offPlan.get(b.id)?.size ?? 0))
+        [0];
+      if (!candidate) break;
+      offPlan.get(candidate.id)?.delete(key);
+    }
+  }
+
+  for (const day of days) {
     const key = dayKey(day);
     const pool = available(day);
     const desiredOn = Math.min(
       pool.length,
       Math.max(minOnDuty, Math.min(targetOnDuty, pool.length)),
     );
-    const desiredOff = Math.max(0, pool.length - desiredOn);
-    if (desiredOff === 0) continue;
-
-    const needing = [...pool]
-      .filter((n) => (offCount.get(n.id) ?? 0) < rdQuota)
-      .sort((a, b) => {
-        const ca = offCount.get(a.id) ?? 0;
-        const cb = offCount.get(b.id) ?? 0;
-        if (ca !== cb) return ca - cb;
-        const ga = gapSinceLastRd(a.id, dayIdx);
-        const gb = gapSinceLastRd(b.id, dayIdx);
-        if (ga !== gb) return gb - ga;
-        const rot =
-          ((a.id.charCodeAt(0) + dayIdx) % nurses.length) -
-          ((b.id.charCodeAt(0) + dayIdx) % nurses.length);
-        return rot || a.user.name.localeCompare(b.user.name);
-      });
-
-    for (const nurse of needing.slice(0, desiredOff)) {
-      offPlan.get(nurse.id)!.add(key);
-      offCount.set(nurse.id, (offCount.get(nurse.id) ?? 0) + 1);
-      lastRdIdx.set(nurse.id, dayIdx);
-    }
-  }
-
-  const onDutyEstimate = (day: Date) => {
-    const key = dayKey(day);
-    return available(day).filter((n) => !offPlan.get(n.id)?.has(key)).length;
-  };
-
-  for (const nurse of nurses) {
-    while ((offCount.get(nurse.id) ?? 0) < rdQuota) {
-      const candidates = days
-        .map((day, idx) => ({ day, idx, key: dayKey(day) }))
-        .filter(({ day, key }) => {
-          if (offPlan.get(nurse.id)?.has(key)) return false;
-          if (nurse.licenseExpiresAt < day) return false;
-          if (onLeaveThatDay(nurse.id, day, leaveByNurse)) return false;
-          return onDutyEstimate(day) > minOnDuty;
-        })
+    while (onDutyCount(day) > desiredOn) {
+      const candidate = pool
+        .filter(
+          (n) =>
+            !offPlan.get(n.id)?.has(key) &&
+            (offPlan.get(n.id)?.size ?? 0) < rdQuota,
+        )
         .sort((a, b) => {
-          const staff = onDutyEstimate(b.day) - onDutyEstimate(a.day);
-          if (staff !== 0) return staff;
-          const dist = (idx: number) => {
-            const keys = [...(offPlan.get(nurse.id) ?? [])];
-            if (keys.length === 0) return 999;
-            return Math.min(
-              ...keys.map((k) => {
-                const other = days.findIndex((d) => dayKey(d) === k);
-                return other < 0 ? 999 : Math.abs(other - idx);
-              }),
-            );
-          };
-          return dist(b.idx) - dist(a.idx) || a.idx - b.idx;
-        });
+          const dayIdx = days.findIndex((d) => dayKey(d) === key);
+          const streakA = consecutiveWorkStreak({
+            nurseId: a.id,
+            dayIdx,
+            days,
+            offPlan,
+            leaveByNurse,
+            workedKeys: new Set(),
+          });
+          const streakB = consecutiveWorkStreak({
+            nurseId: b.id,
+            dayIdx,
+            days,
+            offPlan,
+            leaveByNurse,
+            workedKeys: new Set(),
+          });
+          return streakB - streakA;
+        })[0];
+      if (!candidate) break;
 
-      if (candidates.length === 0) break;
+      const dayIdx = days.findIndex((d) => dayKey(d) === key);
+      const prevIsRd =
+        dayIdx > 0 && offPlan.get(candidate.id)?.has(dayKey(days[dayIdx - 1]));
+      const nextIsRd =
+        dayIdx < days.length - 1 &&
+        offPlan.get(candidate.id)?.has(dayKey(days[dayIdx + 1]));
 
-      const pick = candidates[0];
-      offPlan.get(nurse.id)!.add(pick.key);
-      offCount.set(nurse.id, (offCount.get(nurse.id) ?? 0) + 1);
-      lastRdIdx.set(nurse.id, pick.idx);
+      offPlan.get(candidate.id)!.add(key);
+      if (!prevIsRd && !nextIsRd) {
+        const extendIdx =
+          dayIdx < days.length - 1 &&
+          !offPlan.get(candidate.id)?.has(dayKey(days[dayIdx + 1])) &&
+          (offPlan.get(candidate.id)?.size ?? 0) < rdQuota
+            ? dayIdx + 1
+            : dayIdx > 0 &&
+                !offPlan.get(candidate.id)?.has(dayKey(days[dayIdx - 1])) &&
+                (offPlan.get(candidate.id)?.size ?? 0) < rdQuota
+              ? dayIdx - 1
+              : -1;
+        if (extendIdx >= 0) {
+          offPlan.get(candidate.id)!.add(dayKey(days[extendIdx]));
+        }
+      }
     }
   }
-
-  return offPlan;
 };
